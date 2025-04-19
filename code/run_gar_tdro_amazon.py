@@ -10,7 +10,14 @@ from Train import train_TDRO
 from Full_rank import full_ranking
 from Metric import print_results
 
+from torch.utils.data import DataLoader, default_collate
 
+def custom_collate(batch):
+    user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
+    item_tensor = torch.cat([item[1] for item in batch], dim=0)  # [batch_size * (1 + num_neg)]
+    group_tensor = torch.cat([item[2] for item in batch], dim=0)  # [batch_size]
+    period_tensor = torch.cat([item[3] for item in batch], dim=0)  # [batch_size]
+    return user_tensor, item_tensor, group_tensor, period_tensor
 # GAR Model with TDRO integration
 class GARModel(torch.nn.Module):
     def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.9, K=3, E=4, lambda_=0.5, p=0.2, mu=0.5, eta_w=0.01):
@@ -80,42 +87,43 @@ class GARModel(torch.nn.Module):
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
     
         # Group and period losses for TDRO
-        group_tensor = group_tensor.squeeze()  # Ensure 1D tensor
-        if group_tensor.dim() != 1:
-            raise ValueError(f"Expected 1D group_tensor, got {group_tensor.shape}")
+        group_tensor = group_tensor.squeeze()  # Ensure 1D [batch_size]
+        period_tensor = period_tensor.squeeze()  # Ensure 1D [batch_size]
+        if group_tensor.dim() != 1 or period_tensor.dim() != 1:
+            raise ValueError(f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
         for i in range(batch_size):
             group = group_tensor[i].item()
-            period = period_tensor[i].item()  # Assuming period_tensor is also 1D after squeeze
-            loss_i = torch.pow(user_emb[i] - feature_reps[i], 2).mean()
+            period = period_tensor[i].item()
+            # Average feature_reps over items for each user
+            user_feature_reps = feature_reps[i].mean(dim=0)  # Reduce [257, 64] to [64]
+            loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
             self.group_losses[group, period] = (1 - self.mu) * self.group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
-        group_losses /= torch.bincount(group_tensor, minlength=self.K).float().cuda()
+        group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
+        group_losses /= group_counts.clamp(min=1)  # Avoid division by zero
     
-        # ... (rest of the method remains the same)
-
         # Shifting trend
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')
-            for g in range(self.K):
-                mask = (group_tensor == g) & (period_tensor == e)
-                if mask.sum() > 0:
-                    grads_e += torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0][mask].mean(dim=0).detach()
+            mask = (period_tensor == e)  # 1D mask [batch_size]
+            if mask.sum() > 0:
+                grads_e += torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0][mask].mean(dim=0).detach()
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
         shifting_trend = sum(period_grads)
-
+    
         # Group selection
         worst_case = (1 - self.lambda_) * group_losses
         shifting_factors = torch.tensor([torch.dot(grads_e.mean(dim=0), shifting_trend) for grads_e in period_grads], device='cuda')
         scores = worst_case - self.lambda_ * shifting_factors
         j_star = torch.argmin(scores).item()
-
+    
         # Update group weights
         c_i = (1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors
         self.w = self.w * torch.exp(self.eta_w * c_i)
         self.w /= self.w.sum()
-
+    
         # Weighted loss
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
         return loss_weightsum, torch.tensor(0.0)  # Placeholder for reg_loss
@@ -172,7 +180,7 @@ if __name__ == '__main__':
     feature_dim = pretrained_emb.size(1)
 
     train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, args.num_group, args.num_period, args.split_mode, pretrained_emb, dataset='amazon')
-    train_dataloader = DataLoader(train_dataset, args.batch_size, shuffle=True, num_workers=args.num_workers)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate)
     print('Dataset loaded.')
 
     model = GARModel(num_user, num_item, args.dim_E, feature_dim, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
