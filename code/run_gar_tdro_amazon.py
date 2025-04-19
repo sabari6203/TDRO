@@ -10,8 +10,6 @@ from Train import train_TDRO
 from Full_rank import full_ranking
 from Metric import print_results
 
-# Set working directory to code (adjust if needed based on Kaggle setup)
-os.chdir('/kaggle/working/code')
 
 # GAR Model with TDRO integration
 class GARModel(torch.nn.Module):
