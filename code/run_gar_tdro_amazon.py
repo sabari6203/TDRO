@@ -103,7 +103,7 @@ class GARModel(torch.nn.Module):
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
         group_losses /= group_counts.clamp(min=1)
     
-        # Shifting trend
+        # Shifting trend (compute gradients without modifying the graph yet)
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')  # [64]
@@ -114,9 +114,7 @@ class GARModel(torch.nn.Module):
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
         shifting_trend = sum(period_grads)  # [64]
     
-        # Group selection
-        worst_case = (1 - self.lambda_) * group_losses  # [K]
-        # Compute shifting_factors per group based on a single shifting_trend
+        # Group selection (compute gradients without modifying the graph yet)
         shifting_factors = torch.zeros(self.K, device='cuda')  # [K]
         for g in range(self.K):
             mask_g = (group_tensor == g)  # [256]
@@ -124,11 +122,8 @@ class GARModel(torch.nn.Module):
                 grads_g = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
                 grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()  # [64]
                 shifting_factors[g] = torch.dot(grads_g_mean, shifting_trend)
-        scores = worst_case - self.lambda_ * shifting_factors  # [K] - [K]
-    
-        # Update group weights
-        c_i = (1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors
-        self.w = self.w * torch.exp(self.eta_w * c_i)
+        scores = (1 - self.lambda_) * group_losses - self.lambda_ * shifting_factors
+        self.w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
         self.w /= self.w.sum()
     
         # Weighted loss
@@ -207,20 +202,18 @@ if __name__ == '__main__':
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            # Ensure item_tensor is offset correctly and matches pretrained_emb
             item_indices = item_tensor - num_user  # [batch_size, 1 + num_neg]
             features = pretrained_emb[item_indices].to(device)  # [batch_size, 1 + num_neg, feature_dim]
             print(f"features shape: {features.shape}, device: {features.device}")
             print(f"item_tensor shape: {item_tensor.shape}, min: {item_tensor.min()}, max: {item_tensor.max()}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
-            loss.backward()
+            loss.backward(retain_graph=True)  # Retain graph for potential future use
             optimizer.step()
             total_loss += loss.item()
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
-
         if torch.isnan(torch.tensor(total_loss)):
             print("Loss is NaN. Exiting.")
             break
