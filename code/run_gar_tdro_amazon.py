@@ -96,7 +96,7 @@ class GARModel(torch.nn.Module):
         for i in range(batch_size):
             group = group_tensor[i].item()
             period = period_tensor[i].item()
-            user_feature_reps = feature_reps[i].mean(dim=0)  # [dim_E]
+            user_feature_reps = feature_reps[i].mean(dim=0)  # [64], average over 257 items
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
             self.group_losses[group, period] = (1 - self.mu) * self.group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
@@ -107,9 +107,11 @@ class GARModel(torch.nn.Module):
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')
-            mask = (period_tensor == e)
+            mask = (period_tensor == e)  # [256]
             if mask.sum() > 0:
-                grads_e += torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0][mask].mean(dim=0).detach()
+                # Compute gradient with respect to the entire feature_reps for masked users
+                grads = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
+                grads_e += grads[mask].mean(dim=[0, 1]).detach()  # Average over batch and items
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
         shifting_trend = sum(period_grads)
     
