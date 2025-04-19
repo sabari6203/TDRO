@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, default_collate
 
 def custom_collate(batch):
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
-    item_tensor = torch.cat([item[1] for item in batch], dim=0)  # [batch_size * (1 + num_neg)]
+    item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
     group_tensor = torch.cat([item[2] for item in batch], dim=0)  # [batch_size]
     period_tensor = torch.cat([item[3] for item in batch], dim=0)  # [batch_size]
     return user_tensor, item_tensor, group_tensor, period_tensor
@@ -63,12 +63,12 @@ class GARModel(torch.nn.Module):
         print(f"item_ids shape: {item_ids.shape}, min: {item_ids.min()}, max: {item_ids.max()}")
         print(f"features shape: {features.shape}, device: {features.device}")
         print(f"pretrained_emb shape: {pretrained_emb.shape}, device: {pretrained_emb.device}")
-        user_emb = self.user_embedding(user_ids)
-        item_emb = self.item_embedding(item_ids - num_user)
-        feature_reps = self.feature_extractor(features)  # [256, 257, 64]
-        gen_reps = self.generator(features)
-        real_output = self.discriminator(item_emb)
-        fake_output = self.discriminator(gen_reps)
+        user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
+        item_emb = self.item_embedding(item_ids - num_user)  # [batch_size, 1 + num_neg, dim_E]
+        feature_reps = self.feature_extractor(features)  # [batch_size, 1 + num_neg, dim_E]
+        gen_reps = self.generator(features)  # [batch_size, 1 + num_neg, dim_E]
+        real_output = self.discriminator(item_emb.mean(dim=1))  # Average over items
+        fake_output = self.discriminator(gen_reps.mean(dim=1))  # Average over items
         return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
 
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
@@ -76,7 +76,7 @@ class GARModel(torch.nn.Module):
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
     
         # Interaction prediction loss
-        pred_loss = torch.mean(torch.pow(user_emb - feature_reps, 2))
+        pred_loss = torch.mean(torch.pow(user_emb - feature_reps.mean(dim=1), 2))
     
         # Adversarial losses
         d_loss_real = torch.mean(torch.pow(real_output - torch.ones_like(real_output), 2))
@@ -88,27 +88,26 @@ class GARModel(torch.nn.Module):
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
     
         # Group and period losses for TDRO
-        group_tensor = group_tensor.squeeze()  # Ensure 1D [batch_size]
-        period_tensor = period_tensor.squeeze()  # Ensure 1D [batch_size]
+        group_tensor = group_tensor.squeeze()
+        period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
             raise ValueError(f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
         for i in range(batch_size):
             group = group_tensor[i].item()
             period = period_tensor[i].item()
-            # Average feature_reps over items for each user
-            user_feature_reps = feature_reps[i].mean(dim=0)  # Reduce [257, 64] to [64]
+            user_feature_reps = feature_reps[i].mean(dim=0)  # [dim_E]
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
             self.group_losses[group, period] = (1 - self.mu) * self.group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
-        group_losses /= group_counts.clamp(min=1)  # Avoid division by zero
+        group_losses /= group_counts.clamp(min=1)
     
         # Shifting trend
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')
-            mask = (period_tensor == e)  # 1D mask [batch_size]
+            mask = (period_tensor == e)
             if mask.sum() > 0:
                 grads_e += torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0][mask].mean(dim=0).detach()
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
@@ -127,7 +126,7 @@ class GARModel(torch.nn.Module):
     
         # Weighted loss
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
-        return loss_weightsum, torch.tensor(0.0)  # Placeholder for reg_loss
+        return loss_weightsum, torch.tensor(0.0)
 
 # Argument parser setup
 def init():
@@ -201,8 +200,11 @@ if __name__ == '__main__':
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            features = pretrained_emb[item_tensor - num_user].to(device)  # Use item_tensor, not item_ids
+            # Ensure item_tensor is offset correctly and matches pretrained_emb
+            item_indices = item_tensor - num_user  # [batch_size, 1 + num_neg]
+            features = pretrained_emb[item_indices].to(device)  # [batch_size, 1 + num_neg, feature_dim]
             print(f"features shape: {features.shape}, device: {features.device}")
+            print(f"item_tensor shape: {item_tensor.shape}, min: {item_tensor.min()}, max: {item_tensor.max()}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward()
