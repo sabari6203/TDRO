@@ -31,14 +31,14 @@ class GARModel(torch.nn.Module):
         self.K = K
         self.E = E
         self.lambda_ = lambda_
-        self.p = p
+        self.p = torch.tensor(p, dtype=torch.float32, device='cuda', requires_grad=False)  # Convert to Tensor
         self.mu = mu
         self.eta_w = eta_w
         self.w = torch.ones(K, device='cuda') / K
         self.group_losses = torch.zeros(K, E, device='cuda')
         self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
         self.emb_id = torch.arange(num_user + num_item, device='cuda')
-
+    
         # Feature extractor, generator, and discriminator
         self.feature_extractor = torch.nn.Sequential(
             torch.nn.Linear(feature_dim, dim_E),
