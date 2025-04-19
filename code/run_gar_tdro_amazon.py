@@ -181,18 +181,20 @@ if __name__ == '__main__':
     topK = eval(args.topK)
     max_val_result = max_test_result = max_test_result_warm = max_test_result_cold = None
 
+    torch.cuda.empty_cache()
     for epoch in range(args.num_epoch):
         epoch_start_time = time.time()
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            features = pretrained_emb[item_ids - num_user].to(device)  # Ensure device consistency
+            features = pretrained_emb[item_tensor - num_user].to(device)  # Use item_tensor, not item_ids
             print(f"features shape: {features.shape}, device: {features.device}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+        torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
 
