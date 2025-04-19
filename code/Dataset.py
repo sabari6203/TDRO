@@ -282,7 +282,7 @@ class DRO_Dataset(Dataset):
         cluster_ids = torch.zeros(self.num_item).long()
         warm_id = torch.LongTensor([wid-self.num_user for wid in self.all_set])
         if n_group>1:
-            cluster_ids_, _ = kmeans(X=rep[warm_id], num_clusters=n_group, distance='euclidean', tqdm_flag=False, device=torch.device('cuda:0'))
+            cluster_ids_, _ = kmeans(X=rep[warm_id], num_clusters=n_group, distance='euclidean', device=torch.device('cuda:0'))
             cluster_ids[warm_id] = cluster_ids_.detach().cpu()
         self.i_group = cluster_ids
 
