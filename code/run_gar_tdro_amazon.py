@@ -5,10 +5,13 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader
-from Dataset import data_load, DRO_Dataset
+from Dataset import data_load, DRO_Dataset  # Updated to match file name
 from Train import train_TDRO
-from full_rank import full_ranking
+from Full_rank import full_ranking
 from Metric import print_results
+
+# Set working directory to code (adjust if needed based on Kaggle setup)
+os.chdir('/kaggle/working/code')
 
 # GAR Model with TDRO integration
 class GARModel(torch.nn.Module):
