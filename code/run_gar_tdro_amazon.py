@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader
-from dataset import data_load, DRO_Dataset
+from Dataset import data_load, DRO_Dataset
 from Train import train_TDRO
 from full_rank import full_ranking
 from Metric import print_results
