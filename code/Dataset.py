@@ -381,10 +381,9 @@ class DRO_Dataset(Dataset):
         user, pos_item, e_pos, g_pos = self.train_data[index]
         neg_item = random.sample(list(self.all_set - set(self.user_item_dict[user])), self.num_neg)
     
-        user_tensor = torch.LongTensor([user])  # Single user per sample
-        item_tensor = torch.LongTensor([pos_item] + neg_item)  # [1 + num_neg] items
-    
-        group_tensor = torch.LongTensor([g_pos])  # Single group per user
-        env_tensor = torch.LongTensor([e_pos])    # Single period per user
+        user_tensor = torch.LongTensor([user])  # [1]
+        item_tensor = torch.LongTensor([pos_item] + neg_item)  # [1 + num_neg]
+        group_tensor = torch.LongTensor([g_pos])  # [1]
+        env_tensor = torch.LongTensor([e_pos])    # [1]
     
         return user_tensor, item_tensor, group_tensor, env_tensor
