@@ -66,28 +66,33 @@ class GARModel(torch.nn.Module):
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
-
+    
         # Interaction prediction loss
         pred_loss = torch.mean(torch.pow(user_emb - feature_reps, 2))
-
+    
         # Adversarial losses
         d_loss_real = torch.mean(torch.pow(real_output - torch.ones_like(real_output), 2))
         d_loss_fake = torch.mean(torch.pow(fake_output - torch.zeros_like(fake_output), 2))
         g_loss = torch.mean(torch.pow(fake_output - torch.ones_like(fake_output), 2))
         d_loss = d_loss_real + d_loss_fake
-
+    
         # Total loss
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
-
+    
         # Group and period losses for TDRO
+        group_tensor = group_tensor.squeeze()  # Ensure 1D tensor
+        if group_tensor.dim() != 1:
+            raise ValueError(f"Expected 1D group_tensor, got {group_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
         for i in range(batch_size):
             group = group_tensor[i].item()
-            period = period_tensor[i].item()
+            period = period_tensor[i].item()  # Assuming period_tensor is also 1D after squeeze
             loss_i = torch.pow(user_emb[i] - feature_reps[i], 2).mean()
             self.group_losses[group, period] = (1 - self.mu) * self.group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_losses /= torch.bincount(group_tensor, minlength=self.K).float().cuda()
+    
+        # ... (rest of the method remains the same)
 
         # Shifting trend
         period_grads = []
