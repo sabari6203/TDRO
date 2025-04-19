@@ -53,8 +53,10 @@ class GARModel(torch.nn.Module):
         self.item_embedding = torch.nn.Embedding(num_item, dim_E)
 
     def forward(self, user_ids, item_ids, features, training=False):
+        print(f"item_ids shape: {item_ids.shape}, min: {item_ids.min()}, max: {item_ids.max()}")
+        print(f"pretrained_emb shape: {pretrained_emb.shape}, device: {pretrained_emb.device}")
         user_emb = self.user_embedding(user_ids)
-        item_emb = self.item_embedding(item_ids)
+        item_emb = self.item_embedding(item_ids - num_user)  # Ensure correct offset
         feature_reps = self.feature_extractor(features)
         gen_reps = self.generator(features)
         real_output = self.discriminator(item_emb)
