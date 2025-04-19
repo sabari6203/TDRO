@@ -115,11 +115,16 @@ class GARModel(torch.nn.Module):
         shifting_trend = sum(period_grads)  # [64]
     
         # Group selection
-        worst_case = (1 - self.lambda_) * group_losses
-        # Ensure grads_e.mean(dim=0) is [64] and shifting_trend is [64]
-        shifting_factors = torch.tensor([torch.dot(grads_e, shifting_trend) for grads_e in period_grads], device='cuda')
-        scores = worst_case - self.lambda_ * shifting_factors
-        j_star = torch.argmin(scores).item()
+        worst_case = (1 - self.lambda_) * group_losses  # [K]
+        # Compute shifting_factors per group based on a single shifting_trend
+        shifting_factors = torch.zeros(self.K, device='cuda')  # [K]
+        for g in range(self.K):
+            mask_g = (group_tensor == g)  # [256]
+            if mask_g.sum() > 0:
+                grads_g = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
+                grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()  # [64]
+                shifting_factors[g] = torch.dot(grads_g_mean, shifting_trend)
+        scores = worst_case - self.lambda_ * shifting_factors  # [K] - [K]
     
         # Update group weights
         c_i = (1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors
