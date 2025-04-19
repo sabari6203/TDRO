@@ -186,7 +186,8 @@ if __name__ == '__main__':
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            features = pretrained_emb[item_tensor - num_user]  # Align features with item indices
+            features = pretrained_emb[item_ids - num_user].to(device)  # Ensure device consistency
+            print(f"features shape: {features.shape}, device: {features.device}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward()
