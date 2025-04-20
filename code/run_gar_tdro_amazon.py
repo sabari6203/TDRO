@@ -124,21 +124,18 @@ class GARModel(torch.nn.Module):
         return loss_weightsum, torch.tensor(0.0)
 
 # Argument parser setup
-# ... (previous imports and GARModel definition remain the same)
-
-# Argument parser setup
 def init():
     parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
     parser.add_argument('--seed', type=int, default=1, help='Random seed')
     parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')  # Reduced
-    parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')  # Increased
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
+    parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=1e-4, help='Learning rate')  # Reduced
-    parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')  # Increased
-    parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')  # Reduced
+    parser.add_argument('--l_r', type=float, default=5e-4, help='Learning rate')  # Reverted to 5e-4 as a balance
+    parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')
+    parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
     parser.add_argument('--num_period', type=int, default=3, help='Number of time periods for TDRO')
     parser.add_argument('--split_mode', type=str, default='relative', choices=['relative', 'global'], help='Time split mode')
@@ -248,9 +245,10 @@ if __name__ == '__main__':
                 torch.save(model, f'{args.save_path}GAR_TDRO_amazon.pth')
             else:
                 num_decreases += 1
-                if num_decreases > 20:  # Increased patience to 20
-                    print('Early stopping triggered.')
-                    break
+                # Comment out early stopping for now
+                # if num_decreases > 20:
+                #     print('Early stopping triggered.')
+                #     break
 
     model = torch.load(f'{args.save_path}GAR_TDRO_amazon.pth')
     model.eval()
