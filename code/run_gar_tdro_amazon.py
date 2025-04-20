@@ -11,14 +11,16 @@ from Full_rank import full_ranking
 from Metric import print_results
 
 from torch.utils.data import DataLoader, default_collate
-# import torch.autograd
-# torch.autograd.set_detect_anomaly(True)
+
+# Custom collate function
 def custom_collate(batch):
+    print(f"Collate batch[0] shapes: {torch.cat([item[0] for item in batch], dim=0).shape}, {torch.stack([item[1] for item in batch], dim=0).shape}, {torch.cat([item[2] for item in batch], dim=0).shape}, {torch.cat([item[3] for item in batch], dim=0).shape}")
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
     group_tensor = torch.cat([item[2] for item in batch], dim=0)  # [batch_size]
     period_tensor = torch.cat([item[3] for item in batch], dim=0)  # [batch_size]
     return user_tensor, item_tensor, group_tensor, period_tensor
+
 # GAR Model with TDRO integration
 class GARModel(torch.nn.Module):
     def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.9, K=3, E=4, lambda_=0.5, p=0.2, mu=0.5, eta_w=0.01):
@@ -65,7 +67,7 @@ class GARModel(torch.nn.Module):
         print(f"features shape: {features.shape}, device: {features.device}")
         print(f"pretrained_emb shape: {pretrained_emb.shape}, device: {pretrained_emb.device}")
         user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
-        item_emb = self.item_embedding(item_ids - num_user)  # [batch_size, 1 + num_neg, dim_E]
+        item_emb = self.item_embedding(item_ids - self.num_user)  # Use self.num_user
         feature_reps = self.feature_extractor(features)  # [batch_size, 1 + num_neg, dim_E]
         gen_reps = self.generator(features)  # [batch_size, 1 + num_neg, dim_E]
         real_output = self.discriminator(item_emb.mean(dim=1))  # Average over items
@@ -134,7 +136,30 @@ class GARModel(torch.nn.Module):
         return loss_weightsum, torch.tensor(0.0)
 
 # Argument parser setup
-# ... (previous imports and GARModel definition remain the same)
+def init():
+    parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
+    parser.add_argument('--seed', type=int, default=1, help='Random seed')
+    parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
+    parser.add_argument('--num_epoch', type=int, default=200, help='Number of epochs')
+    parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
+    parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
+    parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
+    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--dim_E', type=int, default=64, help='Embedding dimension')
+    parser.add_argument('--num_neg', type=int, default=256, help='Number of negative samples')
+    parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
+    parser.add_argument('--num_period', type=int, default=4, help='Number of time periods for TDRO')
+    parser.add_argument('--split_mode', type=str, default='relative', choices=['relative', 'global'], help='Time split mode')
+    parser.add_argument('--mu', type=float, default=0.5, help='Streaming learning rate for group DRO')
+    parser.add_argument('--eta', type=float, default=0.01, help='Step size for group DRO')
+    parser.add_argument('--lam', type=float, default=0.5, help='Coefficient for time-aware shifting trend')
+    parser.add_argument('--p', type=float, default=0.2, help='Gradient strength for TDRO')
+    parser.add_argument('--gpu', default='0', help='GPU ID')
+    parser.add_argument('--save_path', default='./models/', help='Model save path')
+    parser.add_argument('--pretrained_emb', default='./pretrained_emb/', help='Path to pretrained embeddings')
+    args = parser.parse_args()
+    return args
 
 if __name__ == '__main__':
     args = init()
@@ -147,10 +172,9 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    global num_user, num_item
+    global num_user, num_item  # Declare global before assignment
     print('Loading Amazon dataset...')
     num_user, num_item, num_warm_item, train_data, val_data, val_warm_data, val_cold_data, test_data, test_warm_data, test_cold_data, v_feat, a_feat, t_feat = data_load(args.data_path)
-  
     dir_str = f'../data/{args.data_path}'
 
     user_item_all_dict = {u_id: train_data[u_id] + val_data[u_id] + test_data[u_id] for u_id in train_data}
