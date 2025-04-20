@@ -9,8 +9,7 @@ from Dataset import data_load, DRO_Dataset
 from Train import train_TDRO
 from Full_rank import full_ranking
 from Metric import print_results
-
-from torch.utils.data import DataLoader, default_collate
+from torch.utils.data import default_collate
 
 # Custom collate function
 def custom_collate(batch):
@@ -27,7 +26,7 @@ class GARModel(torch.nn.Module):
         self.num_user = num_user
         self.num_item = num_item
         self.dim_E = dim_E
-        self.feature_dim = feature_dim  # Should be 128 based on pretrained_emb
+        self.feature_dim = feature_dim
         self.alpha = alpha
         self.beta = beta
         self.K = K
@@ -41,9 +40,8 @@ class GARModel(torch.nn.Module):
         self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
         self.emb_id = torch.arange(num_user + num_item, device='cuda')
     
-        # BatchNorm1d matches feature_dim (128)
         self.feature_extractor = torch.nn.Sequential(
-            torch.nn.BatchNorm1d(feature_dim),  # Normalize feature_dim
+            torch.nn.BatchNorm1d(feature_dim),
             torch.nn.Linear(feature_dim, 200),
             torch.nn.Tanh(),
             torch.nn.Dropout(0.1),
@@ -70,29 +68,31 @@ class GARModel(torch.nn.Module):
         user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
         batch_size, num_items = item_ids.size()  # [batch_size, 1 + num_neg]
         item_emb = self.item_embedding(item_ids - self.num_user)  # [batch_size, 1 + num_neg, dim_E]
-        print(f"Features shape in forward: {features.shape}")  # Debug: [batch_size, 1 + num_neg, feature_dim]
-        
+        print(f"Features shape in forward: {features.shape}")  # Debug
         # Flatten features for BatchNorm1d [batch_size * num_items, feature_dim]
         features_flat = features.view(-1, self.feature_dim)  # [batch_size * (1 + num_neg), feature_dim]
         feature_reps_flat = self.feature_extractor(features_flat)  # [batch_size * (1 + num_neg), dim_E]
         feature_reps = feature_reps_flat.view(batch_size, num_items, self.dim_E)  # Reshape back
         
-        # Same for generator
         gen_reps_flat = self.generator(features_flat)
         gen_reps = gen_reps_flat.view(batch_size, num_items, self.dim_E)
         
-        # Discriminator input
         disc_input = torch.cat([item_emb.mean(dim=1), gen_reps.mean(dim=1)], dim=0)  # [2 * batch_size, dim_E]
         disc_output = self.discriminator(disc_input)  # [2 * batch_size, 1]
         real_output = disc_output[:batch_size]  # [batch_size, 1]
         fake_output = disc_output[batch_size:]  # [batch_size, 1]
-        
+        print(f"Forward output shapes - user_emb: {user_emb.shape}, item_emb: {item_emb.shape}, "
+              f"feature_reps: {feature_reps.shape}, gen_reps: {gen_reps.shape}, "
+              f"real_output: {real_output.shape}, fake_output: {fake_output.shape}")  # Debug
         return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
 
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
-        print(f"Features shape in loss: {features.shape}")  # Debug shape
+        print(f"Features shape in loss: {features.shape}")  # Debug
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
+        print(f"Loss input shapes - user_emb: {user_emb.shape}, item_emb: {item_emb.shape}, "
+              f"feature_reps: {feature_reps.shape}, gen_reps: {gen_reps.shape}, "
+              f"real_output: {real_output.shape}, fake_output: {fake_output.shape}")  # Debug
     
         # Average over item dimension for loss computation
         pred_loss = torch.mean(torch.pow(user_emb.unsqueeze(1) - feature_reps.mean(dim=1), 2))
@@ -144,6 +144,7 @@ class GARModel(torch.nn.Module):
     
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
         return loss_weightsum, torch.tensor(0.0)
+
 # Argument parser setup
 def init():
     parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
@@ -154,7 +155,7 @@ def init():
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')  # Reverted to 5e-4 as a balance
+    parser.add_argument('--l_r', type=float, default=5e-4, help='Learning rate')
     parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')
     parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
@@ -197,6 +198,7 @@ if __name__ == '__main__':
 
     pretrained_emb = torch.FloatTensor(np.load(args.pretrained_emb + args.data_path + '/all_item_feature.npy', allow_pickle=True)).cuda()
     feature_dim = pretrained_emb.size(1)
+    print(f"Pretrained emb shape: {pretrained_emb.shape}, feature_dim: {feature_dim}")  # Debug
 
     train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, args.num_group, args.num_period, args.split_mode, pretrained_emb, dataset='amazon')
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
@@ -217,18 +219,23 @@ if __name__ == '__main__':
     for epoch in range(args.num_epoch):
         epoch_start_time = time.time()
         total_loss = 0.0
-        for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
-            user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            item_indices = item_tensor - num_user
-            if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
-                print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
-                raise ValueError("Item indices out of bounds")
-            features = pretrained_emb[item_indices].to(device)
-            loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
-            optimizer.zero_grad()
-            loss.backward(retain_graph=True)
-            optimizer.step()
-            total_loss += loss.item()
+        try:
+            for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
+                user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
+                item_indices = item_tensor - num_user
+                if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
+                    print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
+                    raise ValueError("Item indices out of bounds")
+                features = pretrained_emb[item_indices].to(device)
+                loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                print(f"Batch loss: {loss.item()}")  # Debug batch loss
+        except Exception as e:
+            print(f"Error in epoch {epoch}: {str(e)}")
+            break
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
