@@ -133,7 +133,7 @@ def init():
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=5e-4, help='Learning rate')  # Reverted to 5e-4 as a balance
+    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')  # Reverted to 5e-4 as a balance
     parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')
     parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
