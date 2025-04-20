@@ -11,8 +11,8 @@ from Full_rank import full_ranking
 from Metric import print_results
 
 from torch.utils.data import DataLoader, default_collate
-import torch.autograd
-torch.autograd.set_detect_anomaly(True)
+# import torch.autograd
+# torch.autograd.set_detect_anomaly(True)
 def custom_collate(batch):
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
