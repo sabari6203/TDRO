@@ -134,30 +134,7 @@ class GARModel(torch.nn.Module):
         return loss_weightsum, torch.tensor(0.0)
 
 # Argument parser setup
-def init():
-    parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
-    parser.add_argument('--seed', type=int, default=1, help='Random seed')
-    parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
-    parser.add_argument('--num_epoch', type=int, default=200, help='Number of epochs')
-    parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
-    parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
-    parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--dim_E', type=int, default=64, help='Embedding dimension')
-    parser.add_argument('--num_neg', type=int, default=256, help='Number of negative samples')
-    parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
-    parser.add_argument('--num_period', type=int, default=4, help='Number of time periods for TDRO')
-    parser.add_argument('--split_mode', type=str, default='relative', choices=['relative', 'global'], help='Time split mode')
-    parser.add_argument('--mu', type=float, default=0.5, help='Streaming learning rate for group DRO')
-    parser.add_argument('--eta', type=float, default=0.01, help='Step size for group DRO')
-    parser.add_argument('--lam', type=float, default=0.5, help='Coefficient for time-aware shifting trend')
-    parser.add_argument('--p', type=float, default=0.2, help='Gradient strength for TDRO')
-    parser.add_argument('--gpu', default='0', help='GPU ID')
-    parser.add_argument('--save_path', default='./models/', help='Model save path')
-    parser.add_argument('--pretrained_emb', default='./pretrained_emb/', help='Path to pretrained embeddings')
-    args = parser.parse_args()
-    return args
+# ... (previous imports and GARModel definition remain the same)
 
 if __name__ == '__main__':
     args = init()
@@ -172,6 +149,7 @@ if __name__ == '__main__':
 
     print('Loading Amazon dataset...')
     num_user, num_item, num_warm_item, train_data, val_data, val_warm_data, val_cold_data, test_data, test_warm_data, test_cold_data, v_feat, a_feat, t_feat = data_load(args.data_path)
+    global num_user, num_item
     dir_str = f'../data/{args.data_path}'
 
     user_item_all_dict = {u_id: train_data[u_id] + val_data[u_id] + test_data[u_id] for u_id in train_data}
@@ -200,20 +178,25 @@ if __name__ == '__main__':
     max_val_result = max_test_result = max_test_result_warm = max_test_result_cold = None
 
     torch.cuda.empty_cache()
+    batch_count = 0
     for epoch in range(args.num_epoch):
         epoch_start_time = time.time()
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
+            batch_count += 1
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
             item_indices = item_tensor - num_user
+            if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
+                print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
+                raise ValueError("Item indices out of bounds")
             features = pretrained_emb[item_indices].to(device)
-            print(f"Epoch {epoch}, Batch start: features shape {features.shape}")
+            print(f"Epoch {epoch}, Batch {batch_count}: features shape {features.shape}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward(retain_graph=True)
             optimizer.step()
             total_loss += loss.item()
-            print(f"Epoch {epoch}, Batch loss: {loss.item()}")
+            print(f"Epoch {epoch}, Batch {batch_count}: loss {loss.item()}")
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
