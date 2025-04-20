@@ -185,7 +185,7 @@ if __name__ == '__main__':
     feature_dim = pretrained_emb.size(1)
 
     train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, args.num_group, args.num_period, args.split_mode, pretrained_emb, dataset='amazon')
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
     print('Dataset loaded.')
 
     model = GARModel(num_user, num_item, args.dim_E, feature_dim, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
@@ -205,18 +205,18 @@ if __name__ == '__main__':
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
-            item_indices = item_tensor - num_user  # [batch_size, 1 + num_neg]
-            features = pretrained_emb[item_indices].to(device)  # [batch_size, 1 + num_neg, feature_dim]
-            print(f"features shape: {features.shape}, device: {features.device}")
-            print(f"item_tensor shape: {item_tensor.shape}, min: {item_tensor.min()}, max: {item_tensor.max()}")
+            item_indices = item_tensor - num_user
+            features = pretrained_emb[item_indices].to(device)
+            print(f"Epoch {epoch}, Batch start: features shape {features.shape}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
-            loss.backward(retain_graph=True)  # Retain graph for potential future use
+            loss.backward(retain_graph=True)
             optimizer.step()
             total_loss += loss.item()
+            print(f"Epoch {epoch}, Batch loss: {loss.item()}")
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
-        print(f"Epoch {epoch:03d}: Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
+        print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
         if torch.isnan(torch.tensor(total_loss)):
             print("Loss is NaN. Exiting.")
             break
