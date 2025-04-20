@@ -87,23 +87,24 @@ class GARModel(torch.nn.Module):
         # Total loss
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
     
-        # Group and period losses for TDRO
+        # Group and period losses for TDRO (out-of-place update)
         group_tensor = group_tensor.squeeze()
         period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
             raise ValueError(f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
+        new_group_losses = self.group_losses.clone()  # Create a copy to avoid inplace modification
         for i in range(batch_size):
             group = group_tensor[i].item()
             period = period_tensor[i].item()
             user_feature_reps = feature_reps[i].mean(dim=0)  # [64], average over 257 items
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
-            self.group_losses[group, period] = (1 - self.mu) * self.group_losses[group, period] + self.mu * loss_i
+            new_group_losses[group, period] = (1 - self.mu) * new_group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
         group_losses /= group_counts.clamp(min=1)
     
-        # Shifting trend (compute gradients without modifying the graph yet)
+        # Shifting trend
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')  # [64]
@@ -114,7 +115,8 @@ class GARModel(torch.nn.Module):
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
         shifting_trend = sum(period_grads)  # [64]
     
-        # Group selection (compute gradients without modifying the graph yet)
+        # Group selection
+        worst_case = (1 - self.lambda_) * group_losses  # [K]
         shifting_factors = torch.zeros(self.K, device='cuda')  # [K]
         for g in range(self.K):
             mask_g = (group_tensor == g)  # [256]
@@ -122,9 +124,12 @@ class GARModel(torch.nn.Module):
                 grads_g = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
                 grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()  # [64]
                 shifting_factors[g] = torch.dot(grads_g_mean, shifting_trend)
-        scores = (1 - self.lambda_) * group_losses - self.lambda_ * shifting_factors
-        self.w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
-        self.w /= self.w.sum()
+        scores = worst_case - self.lambda_ * shifting_factors  # [K] - [K]
+    
+        # Update group weights (out-of-place)
+        new_w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
+        new_w /= new_w.sum()
+        self.w = new_w  # Assign new tensor
     
         # Weighted loss
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
