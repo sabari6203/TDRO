@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, default_collate
 
 # Custom collate function
 def custom_collate(batch):
-    print(f"Collate batch[0] shapes: {torch.cat([item[0] for item in batch], dim=0).shape}, {torch.stack([item[1] for item in batch], dim=0).shape}, {torch.cat([item[2] for item in batch], dim=0).shape}, {torch.cat([item[3] for item in batch], dim=0).shape}")
+    # print(f"Collate batch[0] shapes: {torch.cat([item[0] for item in batch], dim=0).shape}, {torch.stack([item[1] for item in batch], dim=0).shape}, {torch.cat([item[2] for item in batch], dim=0).shape}, {torch.cat([item[3] for item in batch], dim=0).shape}")
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
     group_tensor = torch.cat([item[2] for item in batch], dim=0)  # [batch_size]
@@ -215,13 +215,13 @@ if __name__ == '__main__':
                 print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
                 raise ValueError("Item indices out of bounds")
             features = pretrained_emb[item_indices].to(device)
-            print(f"Epoch {epoch}, Batch {batch_count}: features shape {features.shape}")
+            # print(f"Epoch {epoch}, Batch {batch_count}: features shape {features.shape}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward(retain_graph=True)
             optimizer.step()
             total_loss += loss.item()
-            print(f"Epoch {epoch}, Batch {batch_count}: loss {loss.item()}")
+            # print(f"Epoch {epoch}, Batch {batch_count}: loss {loss.item()}")
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
