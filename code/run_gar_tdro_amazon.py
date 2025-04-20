@@ -27,7 +27,7 @@ class GARModel(torch.nn.Module):
         self.num_user = num_user
         self.num_item = num_item
         self.dim_E = dim_E
-        self.feature_dim = feature_dim
+        self.feature_dim = feature_dim  # Expected input feature dimension
         self.alpha = alpha
         self.beta = beta
         self.K = K
@@ -41,9 +41,9 @@ class GARModel(torch.nn.Module):
         self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
         self.emb_id = torch.arange(num_user + num_item, device='cuda')
     
-        # Enhanced MLPs
+        # Dynamically set BatchNorm1d based on feature_dim
         self.feature_extractor = torch.nn.Sequential(
-            torch.nn.BatchNorm1d(feature_dim),
+            torch.nn.BatchNorm1d(feature_dim),  # Should match input feature dimension
             torch.nn.Linear(feature_dim, 200),
             torch.nn.Tanh(),
             torch.nn.Dropout(0.1),
@@ -69,15 +69,19 @@ class GARModel(torch.nn.Module):
     def forward(self, user_ids, item_ids, features, training=False):
         user_emb = self.user_embedding(user_ids)
         item_emb = self.item_embedding(item_ids - self.num_user)
+        print(f"Features shape in forward: {features.shape}")  # Debug shape
         feature_reps = self.feature_extractor(features)
         gen_reps = self.generator(features)
-        # Dot product instead of sigmoid for discriminator
+        # Dot product approach
         disc_input = torch.cat([item_emb.mean(dim=1), gen_reps.mean(dim=1)], dim=0)
         disc_output = self.discriminator(disc_input)
-        return user_emb, item_emb, feature_reps, gen_reps, disc_output[:item_emb.size(0)], disc_output[item_emb.size(0):]
+        real_output = disc_output[:item_emb.size(0)]
+        fake_output = disc_output[item_emb.size(0):]
+        return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
 
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
+        print(f"Features shape in loss: {features.shape}")  # Debug shape
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
     
         # Cross-entropy like loss
@@ -88,7 +92,7 @@ class GARModel(torch.nn.Module):
         sim_loss = torch.mean(torch.abs(gen_reps.mean(dim=1) - item_emb.mean(dim=1)))
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + (1 - self.alpha) * g_loss + self.alpha * sim_loss)
     
-        # TDRO components remain the same
+        # TDRO components
         group_tensor = group_tensor.squeeze()
         period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
