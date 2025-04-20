@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader
-from Dataset import data_load, DRO_Dataset  # Updated to match file name
+from Dataset import data_load, DRO_Dataset
 from Train import train_TDRO
 from Full_rank import full_ranking
 from Metric import print_results
@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader, default_collate
 
 # Custom collate function
 def custom_collate(batch):
-    # print(f"Collate batch[0] shapes: {torch.cat([item[0] for item in batch], dim=0).shape}, {torch.stack([item[1] for item in batch], dim=0).shape}, {torch.cat([item[2] for item in batch], dim=0).shape}, {torch.cat([item[3] for item in batch], dim=0).shape}")
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
     group_tensor = torch.cat([item[2] for item in batch], dim=0)  # [batch_size]
@@ -23,7 +22,7 @@ def custom_collate(batch):
 
 # GAR Model with TDRO integration
 class GARModel(torch.nn.Module):
-    def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.9, K=3, E=4, lambda_=0.5, p=0.2, mu=0.5, eta_w=0.01):
+    def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.6, K=3, E=3, lambda_=0.9, p=0.2, mu=0.5, eta_w=0.01):
         super(GARModel, self).__init__()
         self.num_user = num_user
         self.num_item = num_item
@@ -34,7 +33,7 @@ class GARModel(torch.nn.Module):
         self.K = K
         self.E = E
         self.lambda_ = lambda_
-        self.p = torch.tensor(p, dtype=torch.float32, device='cuda', requires_grad=False)  # Convert to Tensor
+        self.p = torch.tensor(p, dtype=torch.float32, device='cuda', requires_grad=False)
         self.mu = mu
         self.eta_w = eta_w
         self.w = torch.ones(K, device='cuda') / K
@@ -42,7 +41,6 @@ class GARModel(torch.nn.Module):
         self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
         self.emb_id = torch.arange(num_user + num_item, device='cuda')
     
-        # Feature extractor, generator, and discriminator
         self.feature_extractor = torch.nn.Sequential(
             torch.nn.Linear(feature_dim, dim_E),
             torch.nn.ReLU(),
@@ -63,51 +61,42 @@ class GARModel(torch.nn.Module):
         self.item_embedding = torch.nn.Embedding(num_item, dim_E)
 
     def forward(self, user_ids, item_ids, features, training=False):
-        print(f"item_ids shape: {item_ids.shape}, min: {item_ids.min()}, max: {item_ids.max()}")
-        print(f"features shape: {features.shape}, device: {features.device}")
-        print(f"pretrained_emb shape: {pretrained_emb.shape}, device: {pretrained_emb.device}")
-        user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
-        item_emb = self.item_embedding(item_ids - self.num_user)  # Use self.num_user
-        feature_reps = self.feature_extractor(features)  # [batch_size, 1 + num_neg, dim_E]
-        gen_reps = self.generator(features)  # [batch_size, 1 + num_neg, dim_E]
-        real_output = self.discriminator(item_emb.mean(dim=1))  # Average over items
-        fake_output = self.discriminator(gen_reps.mean(dim=1))  # Average over items
+        user_emb = self.user_embedding(user_ids)
+        item_emb = self.item_embedding(item_ids - self.num_user)
+        feature_reps = self.feature_extractor(features)
+        gen_reps = self.generator(features)
+        real_output = self.discriminator(item_emb.mean(dim=1))
+        fake_output = self.discriminator(gen_reps.mean(dim=1))
         return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
 
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
     
-        # Interaction prediction loss
         pred_loss = torch.mean(torch.pow(user_emb - feature_reps.mean(dim=1), 2))
-    
-        # Adversarial losses
         d_loss_real = torch.mean(torch.pow(real_output - torch.ones_like(real_output), 2))
         d_loss_fake = torch.mean(torch.pow(fake_output - torch.zeros_like(fake_output), 2))
         g_loss = torch.mean(torch.pow(fake_output - torch.ones_like(fake_output), 2))
         d_loss = d_loss_real + d_loss_fake
     
-        # Total loss
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
     
-        # Group and period losses for TDRO (out-of-place update)
         group_tensor = group_tensor.squeeze()
         period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
             raise ValueError(f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
-        new_group_losses = self.group_losses.clone().detach()  # Detach to avoid graph tracking
+        new_group_losses = self.group_losses.clone().detach()
         for i in range(batch_size):
             group = group_tensor[i].item()
             period = period_tensor[i].item()
-            user_feature_reps = feature_reps[i].mean(dim=0)  # [64]
+            user_feature_reps = feature_reps[i].mean(dim=0)
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
             new_group_losses[group, period] = (1 - self.mu) * new_group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
         group_losses /= group_counts.clamp(min=1)
     
-        # Shifting trend and group selection (compute gradients once)
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')
@@ -129,9 +118,8 @@ class GARModel(torch.nn.Module):
         scores = (1 - self.lambda_) * group_losses - self.lambda_ * shifting_factors
         new_w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
         new_w /= new_w.sum()
-        self.w = new_w.detach()  # Detach to avoid graph tracking
+        self.w = new_w.detach()
     
-        # Weighted loss
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
         return loss_weightsum, torch.tensor(0.0)
 
@@ -149,11 +137,11 @@ def init():
     parser.add_argument('--dim_E', type=int, default=64, help='Embedding dimension')
     parser.add_argument('--num_neg', type=int, default=256, help='Number of negative samples')
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
-    parser.add_argument('--num_period', type=int, default=4, help='Number of time periods for TDRO')
+    parser.add_argument('--num_period', type=int, default=3, help='Number of time periods for TDRO')
     parser.add_argument('--split_mode', type=str, default='relative', choices=['relative', 'global'], help='Time split mode')
     parser.add_argument('--mu', type=float, default=0.5, help='Streaming learning rate for group DRO')
     parser.add_argument('--eta', type=float, default=0.01, help='Step size for group DRO')
-    parser.add_argument('--lam', type=float, default=0.5, help='Coefficient for time-aware shifting trend')
+    parser.add_argument('--lam', type=float, default=0.9, help='Coefficient for time-aware shifting trend')
     parser.add_argument('--p', type=float, default=0.2, help='Gradient strength for TDRO')
     parser.add_argument('--gpu', default='0', help='GPU ID')
     parser.add_argument('--save_path', default='./models/', help='Model save path')
@@ -172,7 +160,7 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    global num_user, num_item  # Declare global before assignment
+    global num_user, num_item
     print('Loading Amazon dataset...')
     num_user, num_item, num_warm_item, train_data, val_data, val_warm_data, val_cold_data, test_data, test_warm_data, test_cold_data, v_feat, a_feat, t_feat = data_load(args.data_path)
     dir_str = f'../data/{args.data_path}'
@@ -191,7 +179,7 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
     print('Dataset loaded.')
 
-    model = GARModel(num_user, num_item, args.dim_E, feature_dim, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
+    model = GARModel(num_user, num_item, args.dim_E, feature_dim, alpha=args.lam, beta=args.mu, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.l_r)
 
     w_list = torch.ones(args.num_group).cuda()
@@ -203,25 +191,21 @@ if __name__ == '__main__':
     max_val_result = max_test_result = max_test_result_warm = max_test_result_cold = None
 
     torch.cuda.empty_cache()
-    batch_count = 0
     for epoch in range(args.num_epoch):
         epoch_start_time = time.time()
         total_loss = 0.0
         for user_tensor, item_tensor, group_tensor, period_tensor in train_dataloader:
-            batch_count += 1
             user_tensor, item_tensor, group_tensor, period_tensor = user_tensor.to(device), item_tensor.to(device), group_tensor.to(device), period_tensor.to(device)
             item_indices = item_tensor - num_user
             if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
                 print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
                 raise ValueError("Item indices out of bounds")
             features = pretrained_emb[item_indices].to(device)
-            # print(f"Epoch {epoch}, Batch {batch_count}: features shape {features.shape}")
             loss, _ = model.loss(user_tensor, item_tensor, group_tensor, period_tensor, features)
             optimizer.zero_grad()
             loss.backward(retain_graph=True)
             optimizer.step()
             total_loss += loss.item()
-            # print(f"Epoch {epoch}, Batch {batch_count}: loss {loss.item()}")
         torch.cuda.empty_cache()
         elapsed_time = time.time() - epoch_start_time
         print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
