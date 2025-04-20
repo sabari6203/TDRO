@@ -41,21 +41,27 @@ class GARModel(torch.nn.Module):
         self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
         self.emb_id = torch.arange(num_user + num_item, device='cuda')
     
+        # Enhanced MLPs
         self.feature_extractor = torch.nn.Sequential(
-            torch.nn.Linear(feature_dim, dim_E),
-            torch.nn.ReLU(),
-            torch.nn.Linear(dim_E, dim_E)
+            torch.nn.BatchNorm1d(feature_dim),
+            torch.nn.Linear(feature_dim, 200),
+            torch.nn.Tanh(),
+            torch.nn.Dropout(0.1),
+            torch.nn.Linear(200, dim_E)
         )
         self.generator = torch.nn.Sequential(
-            torch.nn.Linear(feature_dim, dim_E),
-            torch.nn.ReLU(),
-            torch.nn.Linear(dim_E, dim_E)
+            torch.nn.BatchNorm1d(feature_dim),
+            torch.nn.Linear(feature_dim, 200),
+            torch.nn.Tanh(),
+            torch.nn.Dropout(0.1),
+            torch.nn.Linear(200, dim_E)
         )
         self.discriminator = torch.nn.Sequential(
-            torch.nn.Linear(dim_E, dim_E),
-            torch.nn.ReLU(),
-            torch.nn.Linear(dim_E, 1),
-            torch.nn.Sigmoid()
+            torch.nn.BatchNorm1d(dim_E),
+            torch.nn.Linear(dim_E, 200),
+            torch.nn.Tanh(),
+            torch.nn.Dropout(0.5),
+            torch.nn.Linear(200, 1)
         )
         self.user_embedding = torch.nn.Embedding(num_user, dim_E)
         self.item_embedding = torch.nn.Embedding(num_item, dim_E)
@@ -65,22 +71,24 @@ class GARModel(torch.nn.Module):
         item_emb = self.item_embedding(item_ids - self.num_user)
         feature_reps = self.feature_extractor(features)
         gen_reps = self.generator(features)
-        real_output = self.discriminator(item_emb.mean(dim=1))
-        fake_output = self.discriminator(gen_reps.mean(dim=1))
-        return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
+        # Dot product instead of sigmoid for discriminator
+        disc_input = torch.cat([item_emb.mean(dim=1), gen_reps.mean(dim=1)], dim=0)
+        disc_output = self.discriminator(disc_input)
+        return user_emb, item_emb, feature_reps, gen_reps, disc_output[:item_emb.size(0)], disc_output[item_emb.size(0):]
 
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(user_tensor, item_tensor, features)
     
+        # Cross-entropy like loss
         pred_loss = torch.mean(torch.pow(user_emb - feature_reps.mean(dim=1), 2))
-        d_loss_real = torch.mean(torch.pow(real_output - torch.ones_like(real_output), 2))
-        d_loss_fake = torch.mean(torch.pow(fake_output - torch.zeros_like(fake_output), 2))
-        g_loss = torch.mean(torch.pow(fake_output - torch.ones_like(fake_output), 2))
-        d_loss = d_loss_real + d_loss_fake
+        d_loss = torch.mean(torch.nn.functional.binary_cross_entropy_with_logits(real_output, torch.ones_like(real_output)) +
+                            torch.nn.functional.binary_cross_entropy_with_logits(fake_output, torch.zeros_like(fake_output)))
+        g_loss = torch.mean(torch.nn.functional.binary_cross_entropy_with_logits(fake_output, torch.ones_like(fake_output)))
+        sim_loss = torch.mean(torch.abs(gen_reps.mean(dim=1) - item_emb.mean(dim=1)))
+        total_loss = self.beta * pred_loss + self.alpha * (d_loss + (1 - self.alpha) * g_loss + self.alpha * sim_loss)
     
-        total_loss = self.beta * pred_loss + self.alpha * (d_loss + g_loss)
-    
+        # TDRO components remain the same
         group_tensor = group_tensor.squeeze()
         period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
