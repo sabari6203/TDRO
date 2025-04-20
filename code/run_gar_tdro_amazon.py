@@ -124,21 +124,26 @@ class GARModel(torch.nn.Module):
         return loss_weightsum, torch.tensor(0.0)
 
 # Argument parser setup
+# ... (previous imports and GARModel definition remain the same)
+
+# Argument parser setup
 def init():
     parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
     parser.add_argument('--seed', type=int, default=1, help='Random seed')
     parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')
-    parser.add_argument('--num_epoch', type=int, default=200, help='Number of epochs')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')  # Reduced
+    parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')  # Increased
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--dim_E', type=int, default=64, help='Embedding dimension')
-    parser.add_argument('--num_neg', type=int, default=256, help='Number of negative samples')
+    parser.add_argument('--l_r', type=float, default=1e-4, help='Learning rate')  # Reduced
+    parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')  # Increased
+    parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')  # Reduced
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
     parser.add_argument('--num_period', type=int, default=3, help='Number of time periods for TDRO')
     parser.add_argument('--split_mode', type=str, default='relative', choices=['relative', 'global'], help='Time split mode')
+    parser.add_argument('--alpha', type=float, default=0.5, help='Coefficient for adversarial loss')
+    parser.add_argument('--beta', type=float, default=0.6, help='Coefficient for interaction prediction loss')
     parser.add_argument('--mu', type=float, default=0.5, help='Streaming learning rate for group DRO')
     parser.add_argument('--eta', type=float, default=0.01, help='Step size for group DRO')
     parser.add_argument('--lam', type=float, default=0.9, help='Coefficient for time-aware shifting trend')
@@ -179,7 +184,7 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
     print('Dataset loaded.')
 
-    model = GARModel(num_user, num_item, args.dim_E, feature_dim, alpha=args.lam, beta=args.mu, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
+    model = GARModel(num_user, num_item, args.dim_E, feature_dim, alpha=args.alpha, beta=args.beta, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.l_r)
 
     w_list = torch.ones(args.num_group).cuda()
@@ -243,7 +248,7 @@ if __name__ == '__main__':
                 torch.save(model, f'{args.save_path}GAR_TDRO_amazon.pth')
             else:
                 num_decreases += 1
-                if num_decreases > 5:
+                if num_decreases > 20:  # Increased patience to 20
                     print('Early stopping triggered.')
                     break
 
