@@ -11,7 +11,8 @@ from Full_rank import full_ranking
 from Metric import print_results
 
 from torch.utils.data import DataLoader, default_collate
-
+import torch.autograd
+torch.autograd.set_detect_anomaly(True)
 def custom_collate(batch):
     user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
@@ -93,43 +94,40 @@ class GARModel(torch.nn.Module):
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
             raise ValueError(f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}")
         group_losses = torch.zeros(self.K, device='cuda')
-        new_group_losses = self.group_losses.clone()  # Create a copy to avoid inplace modification
+        new_group_losses = self.group_losses.clone().detach()  # Detach to avoid graph tracking
         for i in range(batch_size):
             group = group_tensor[i].item()
             period = period_tensor[i].item()
-            user_feature_reps = feature_reps[i].mean(dim=0)  # [64], average over 257 items
+            user_feature_reps = feature_reps[i].mean(dim=0)  # [64]
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
             new_group_losses[group, period] = (1 - self.mu) * new_group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
         group_losses /= group_counts.clamp(min=1)
     
-        # Shifting trend
+        # Shifting trend and group selection (compute gradients once)
         period_grads = []
         for e in range(self.E):
-            grads_e = torch.zeros(self.dim_E, device='cuda')  # [64]
-            mask = (period_tensor == e)  # [256]
+            grads_e = torch.zeros(self.dim_E, device='cuda')
+            mask = (period_tensor == e)
             if mask.sum() > 0:
-                grads = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
-                grads_e += grads[mask].mean(dim=[0, 1]).detach()  # [64], average over batch and items
+                grads = torch.autograd.grad(outputs=loss_i, inputs=feature_reps, retain_graph=True)[0]
+                grads_e += grads[mask].mean(dim=[0, 1]).detach()
             period_grads.append(grads_e * torch.exp(self.p * (e + 1)))
-        shifting_trend = sum(period_grads)  # [64]
+        shifting_trend = sum(period_grads)
     
-        # Group selection
-        worst_case = (1 - self.lambda_) * group_losses  # [K]
-        shifting_factors = torch.zeros(self.K, device='cuda')  # [K]
+        shifting_factors = torch.zeros(self.K, device='cuda')
         for g in range(self.K):
-            mask_g = (group_tensor == g)  # [256]
+            mask_g = (group_tensor == g)
             if mask_g.sum() > 0:
-                grads_g = torch.autograd.grad(loss_i, feature_reps, retain_graph=True)[0]  # [256, 257, 64]
-                grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()  # [64]
+                grads_g = torch.autograd.grad(outputs=loss_i, inputs=feature_reps, retain_graph=True)[0]
+                grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()
                 shifting_factors[g] = torch.dot(grads_g_mean, shifting_trend)
-        scores = worst_case - self.lambda_ * shifting_factors  # [K] - [K]
     
-        # Update group weights (out-of-place)
+        scores = (1 - self.lambda_) * group_losses - self.lambda_ * shifting_factors
         new_w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
         new_w /= new_w.sum()
-        self.w = new_w  # Assign new tensor
+        self.w = new_w.detach()  # Detach to avoid graph tracking
     
         # Weighted loss
         loss_weightsum = torch.sum(self.w * group_losses) + total_loss
