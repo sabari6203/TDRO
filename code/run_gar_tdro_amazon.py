@@ -17,6 +17,54 @@ def custom_collate(batch):
     item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
     return user_tensor, item_tensor
 
+# GAR Dataset class (simplified without groups or periods)
+class GAR_Dataset(torch.utils.data.Dataset):
+    def __init__(self, num_user, num_item, user_item_dict, cold_set, train_data, num_neg, pretrained_emb, dataset='amazon'):
+        self.num_user = num_user
+        self.num_item = num_item
+        self.num_neg = num_neg
+        self.user_item_dict = user_item_dict
+        self.cold_set = cold_set
+        self.all_set = set(range(num_user, num_user + num_item)) - self.cold_set  # all warm items
+        self.train_data = []
+        self.pretrained_emb = pretrained_emb
+        self.dataset = dataset
+
+        # Generate user-item pairs with negatives
+        for u_id, i_ids in train_data.items():
+            for pos_item in i_ids:
+                self.train_data.append((u_id, pos_item))
+        
+        self.user_tensor = []
+        self.item_tensor = []
+        
+        for user, pos_item in self.train_data:
+            # Add positive item
+            self.user_tensor.append(user)
+            self.item_tensor.append(pos_item)
+            
+            # Add negative items
+            neg_items = self._get_neg_items(pos_item, user)
+            self.user_tensor.append(user)
+            self.item_tensor.append(torch.tensor([pos_item] + neg_items))
+
+        self.user_tensor = torch.tensor(self.user_tensor, dtype=torch.long)
+        self.item_tensor = torch.stack(self.item_tensor, dim=0)
+
+    def _get_neg_items(self, pos_item, user):
+        neg_items = []
+        while len(neg_items) < self.num_neg:
+            neg_item = np.random.randint(self.num_user, self.num_user + self.num_item)
+            if neg_item not in self.user_item_dict.get(user, []) and neg_item not in neg_items:
+                neg_items.append(neg_item)
+        return neg_items
+
+    def __len__(self):
+        return len(self.user_tensor)
+
+    def __getitem__(self, idx):
+        return self.user_tensor[idx], self.item_tensor[idx]
+
 # GAR Model (without TDRO)
 class GARModel(torch.nn.Module):
     def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.6):
@@ -141,9 +189,8 @@ if __name__ == '__main__':
     pretrained_emb = torch.FloatTensor(np.load(args.pretrained_emb + args.data_path + '/all_item_feature.npy', allow_pickle=True)).cuda()
     feature_dim = pretrained_emb.size(1)
 
-    # Assuming DRO_Dataset can be adapted; otherwise, create a simpler dataset class
-    from Dataset import DRO_Dataset
-    train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, dataset='amazon', include_groups=False)
+    # Use GAR_Dataset instead of DRO_Dataset
+    train_dataset = GAR_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, pretrained_emb, dataset='amazon')
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
     print('Dataset loaded.')
 
