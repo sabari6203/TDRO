@@ -1,301 +1,242 @@
-import argparse
 import os
 import time
-import numpy as np
+import pickle
+import argparse
 import torch
-import random
-from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from Dataset import data_load
-from Full_rank import full_ranking
-from Metric import print_results
-from torch.utils.data import default_collate
+import numpy as np
+import pandas as pd
+from pprint import pprint
+from torch import nn, optim
+from model import GAR
+from utils import ndcg, Timer, set_seed_torch
+import utils
 
-# Custom collate function for GAR only (user and item tensors)
-def custom_collate(batch):
-    user_tensor = torch.cat([item[0] for item in batch], dim=0)  # [batch_size]
-    item_tensor = torch.stack([item[1] for item in batch], dim=0)  # [batch_size, 1 + num_neg]
-    return user_tensor, item_tensor
+# Other setting
+parser = argparse.ArgumentParser()
+parser.add_argument('--seed', type=int, default=42, help='Random Seed.')
+parser.add_argument('--gpu_id', type=int, default=0)
 
-# GAR Dataset class (simplified without groups or periods)
-class GAR_Dataset(torch.utils.data.Dataset):
-    def __init__(self, num_user, num_item, user_item_dict, cold_set, train_data, num_neg, pretrained_emb, dataset='amazon'):
-        self.num_user = num_user
-        self.num_item = num_item
-        self.num_neg = num_neg
-        self.user_item_dict = user_item_dict
-        self.cold_set = cold_set
-        self.all_set = set(range(num_user, num_user + num_item)) - self.cold_set  # all warm items
-        self.train_data = []
-        self.pretrained_emb = pretrained_emb
-        self.dataset = dataset
+# Dataset
+parser.add_argument('--datadir', type=str, default="./data/", help='Directory of the dataset.')
+parser.add_argument('--dataset', type=str, default="Amazon", help='Dataset to use.')
 
-        # Generate user-item pairs with negatives
-        for u_id, i_ids in train_data.items():
-            for pos_item in i_ids:
-                self.train_data.append((u_id, pos_item))
-        
-        self.user_tensor = []
-        self.item_tensor = []
-        
-        for user, pos_item in self.train_data:
-            # Convert pos_item to tensor and get negative items
-            neg_items = self._get_neg_items(pos_item, user)
-            item_list = [pos_item] + neg_items  # Combine positive and negative items
-            self.user_tensor.append(torch.tensor([user], dtype=torch.long))  # Ensure 1D tensor
-            self.item_tensor.append(torch.tensor(item_list, dtype=torch.long))
+# Validation & testing
+parser.add_argument('--val_interval', type=float, default=1)
+parser.add_argument('--val_start', type=int, default=0, help='Validation per training batch.')
+parser.add_argument('--test_batch_us', type=int, default=200)
+parser.add_argument('--Ks', nargs='?', default='[20]', help='Output sizes of every layer')
+parser.add_argument('--n_test_user', type=int, default=2000)
 
-        self.user_tensor = torch.cat(self.user_tensor, dim=0)  # Concatenate into a single tensor
-        self.item_tensor = torch.stack(self.item_tensor, dim=0)
-    def _get_neg_items(self, pos_item, user):
-        neg_items = []
-        while len(neg_items) < self.num_neg:
-            neg_item = np.random.randint(self.num_user, self.num_user + self.num_item)
-            if neg_item not in self.user_item_dict.get(user, []) and neg_item not in neg_items and self.num_user <= neg_item < self.num_user + self.num_item:
-                neg_items.append(neg_item)
-        return neg_items
+# Cold-start model training
+parser.add_argument('--embed_meth', type=str, default='ncf', help='Recommender method')
+parser.add_argument('--batch_size', type=int, default=1024, help='Normal batch size.')
+parser.add_argument('--train_set', type=str, default='map', choices=['map', 'emb'])
+parser.add_argument('--max_epoch', type=int, default=1000)
+parser.add_argument('--restore', type=str, default="")
+parser.add_argument('--patience', type=int, default=10, help='Early stop patience.')
 
-    def __len__(self):
-        return len(self.user_tensor)
+# Cold-start model parameters
+parser.add_argument('--model', type=str, default='gar')
+parser.add_argument('--alpha', type=float, default=0.05, help='Parameter in GAR')
+parser.add_argument('--beta', type=float, default=0.1, help='Parameter in GAR')
 
-    def __getitem__(self, idx):
-        return self.user_tensor[idx].unsqueeze(0), self.item_tensor[idx]
+args, _ = parser.parse_known_args()
 
-# GAR Model (without TDRO)
-class GARModel(torch.nn.Module):
-    def __init__(self, num_user, num_item, dim_E, feature_dim, alpha=0.5, beta=0.6):
-        super(GARModel, self).__init__()
-        self.num_user = num_user
-        self.num_item = num_item
-        self.dim_E = dim_E
-        self.feature_dim = feature_dim
-        self.alpha = alpha
-        self.beta = beta
-        self.result = torch.zeros(num_user + num_item, dim_E, device='cuda')
-        self.emb_id = torch.arange(num_user + num_item, device='cuda')
-    
-        self.feature_extractor = torch.nn.Sequential(
-            torch.nn.BatchNorm1d(feature_dim),
-            torch.nn.Linear(feature_dim, 200),
-            torch.nn.Tanh(),
-            torch.nn.Dropout(0.1),
-            torch.nn.Linear(200, dim_E)
-        )
-        self.generator = torch.nn.Sequential(
-            torch.nn.BatchNorm1d(feature_dim),
-            torch.nn.Linear(feature_dim, 200),
-            torch.nn.Tanh(),
-            torch.nn.Dropout(0.1),
-            torch.nn.Linear(200, dim_E)
-        )
-        self.discriminator = torch.nn.Sequential(
-            torch.nn.BatchNorm1d(dim_E),
-            torch.nn.Linear(dim_E, 200),
-            torch.nn.Tanh(),
-            torch.nn.Dropout(0.5),
-            torch.nn.Linear(200, 1)
-        )
-        self.user_embedding = torch.nn.Embedding(num_user, dim_E)
-        self.item_embedding = torch.nn.Embedding(num_item, dim_E)
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+args.Ks = eval(args.Ks)
+args.model = args.model.upper()
+set_seed_torch(args.seed)
+pprint(vars(args))
+timer = Timer(name='main')
+ndcg.init(args)
 
-    def forward(self, user_ids, item_ids, features, training=False):
-        # Debugging prints to check tensor shapes
-        # print(f"user_ids shape: {user_ids.shape}")
-        # print(f"item_ids shape: {item_ids.shape}")
-        # print(f"features shape: {features.shape}")
-        
-        user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
-        batch_size, num_items = item_ids.size()  # [batch_size, 1 + num_neg]
-        item_emb = self.item_embedding(item_ids- self.num_user)  # [batch_size, 1 + num_neg, dim_E]
-        features_flat = features.view(-1, self.feature_dim)  # [batch_size * (1 + num_neg), feature_dim]
-        feature_reps_flat = self.feature_extractor(features_flat)  # [batch_size * (1 + num_neg), dim_E]
-        feature_reps = feature_reps_flat.view(batch_size, num_items, self.dim_E)  # Reshape back
-        
-        gen_reps_flat = self.generator(features_flat)
-        gen_reps = gen_reps_flat.view(batch_size, num_items, self.dim_E)
-        
-        disc_input = torch.cat([item_emb.mean(dim=1), gen_reps.mean(dim=1)], dim=0)  # [2 * batch_size, dim_E]
-        disc_output = self.discriminator(disc_input)  # [2 * batch_size, 1]
-        real_output = disc_output[:batch_size]  # [batch_size, 1]
-        fake_output = disc_output[batch_size:]  # [batch_size, 1]
-        return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
+# Load data
+content_data = np.load(os.path.join(args.datadir, args.dataset, args.dataset + '_item_content.npy'))
+content_data = np.concatenate([np.zeros([1, content_data.shape[-1]]), content_data], axis=0)
+para_dict = pickle.load(open(args.datadir + args.dataset + '/convert_dict.pkl', 'rb'))
+train_data = pd.read_csv(args.datadir + args.dataset + '/warm_{}.csv'.format(args.train_set), dtype=np.int64).values
 
-    def loss(self, user_tensor, item_tensor, features):
-        batch_size = user_tensor.size(0)
-        user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(
-            user_tensor, item_tensor, features
-        )
-        
-        # Prediction loss
-        pred_loss = torch.mean(torch.pow(user_emb.unsqueeze(1) - feature_reps.mean(dim=1), 2))
-        
-        # Discriminator and generator losses
-        d_loss = torch.mean(
-            torch.nn.functional.binary_cross_entropy_with_logits(real_output, torch.ones_like(real_output)) +
-            torch.nn.functional.binary_cross_entropy_with_logits(fake_output, torch.zeros_like(fake_output))
-        )
-        g_loss = torch.mean(
-            torch.nn.functional.binary_cross_entropy_with_logits(fake_output, torch.ones_like(fake_output))
-        )
-        sim_loss = torch.mean(torch.abs(gen_reps.mean(dim=1) - item_emb.mean(dim=1)))
-        
-        # Total loss with balancing coefficients
-        total_loss = self.beta * pred_loss + self.alpha * (d_loss + (1 - self.alpha) * g_loss + self.alpha * sim_loss)
-        return total_loss, torch.tensor(0.0)
+# Load embedding
+t0 = time.time()
+emb_path = os.path.join(args.datadir, args.dataset, "{}.npy".format(args.embed_meth))
+user_node_num = max(para_dict['user_array']) + 1
+item_node_num = max(para_dict['item_array']) + 1
+emb = np.load(emb_path)
+user_emb = emb[:user_node_num]
+item_emb = emb[user_node_num:]
+timer.logging('Embeddings are loaded from {}'.format(emb_path))
 
-# Argument parser setup
-def init():
-    parser = argparse.ArgumentParser(description="Run GAR on Amazon dataset")
-    parser.add_argument('--seed', type=int, default=1, help='Random seed')
-    parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')  # Updated to 256
-    parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')
-    parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
-    parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
-    parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=5e-4, help='Initial learning rate')
-    parser.add_argument('--dim_E', type=int, default=256, help='Embedding dimension')  # Updated to 256
-    parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
-    parser.add_argument('--alpha', type=float, default=0.5, help='Coefficient for adversarial loss')
-    parser.add_argument('--beta', type=float, default=0.6, help='Coefficient for interaction prediction loss')
-    parser.add_argument('--gpu', default='0', help='GPU ID')
-    parser.add_argument('--save_path', default='./models/', help='Model save path')
-    parser.add_argument('--pretrained_emb', default='./pretrained_emb/', help='Path to pretrained embeddings')
-    args = parser.parse_args()
-    return args
+# Load test set
+def get_exclude_pair(u_pair, ts_nei):
+    pos_item = np.array(sorted(list(set(para_dict['pos_user_nb'][u_pair[0]]) - set(ts_nei[u_pair[0]]))),
+                        dtype=np.int64)
+    pos_user = np.array([u_pair[1]] * len(pos_item), dtype=np.int64)
+    return np.stack([pos_user, pos_item], axis=1)
 
-if __name__ == '__main__':
-    args = init()
+def get_exclude_pair_count(ts_user, ts_nei, batch):
+    exclude_pair_list = []
+    exclude_count = [0]
+    for i, beg in enumerate(range(0, len(ts_user), batch)):
+        end = min(beg + batch, len(ts_user))
+        batch_user = ts_user[beg:end]
+        batch_range = list(range(end - beg))
+        batch_u_pair = tuple(zip(batch_user.tolist(), batch_range))  # (org_id, map_id)
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        specialize_get_exclude_pair = lambda x: get_exclude_pair(x, ts_nei)
+        exclude_pair = list(map(specialize_get_exclude_pair, batch_u_pair))
+        exclude_pair = np.concatenate(exclude_pair, axis=0)
 
-    global num_user, num_item
-    print('Loading Amazon dataset...')
-    num_user, num_item, num_warm_item, train_data, val_data, val_warm_data, val_cold_data, test_data, test_warm_data, test_cold_data, v_feat, a_feat, t_feat = data_load(args.data_path)
-    dir_str = f'../data/{args.data_path}'
+        exclude_pair_list.append(exclude_pair)
+        exclude_count.append(exclude_count[i] + len(exclude_pair))
 
-    user_item_all_dict = {u_id: train_data[u_id] + val_data[u_id] + test_data[u_id] for u_id in train_data}
-    train_dict = {u_id: train_data[u_id] for u_id in train_data}
-    tv_dict = {u_id: train_data[u_id] + val_data[u_id] for u_id in train_data}
+    exclude_pair_list = np.concatenate(exclude_pair_list, axis=0)
+    return [exclude_pair_list, exclude_count]
 
-    warm_item = set([i_id.item() + num_user for i_id in torch.tensor(list(np.load(dir_str + '/warm_item.npy', allow_pickle=True).item()))])
-    cold_item = set([i_id.item() + num_user for i_id in torch.tensor(list(np.load(dir_str + '/cold_item.npy', allow_pickle=True).item()))])
-    warm_test_items = set().union(*test_warm_data.values())
-    cold_test_items = set().union(*test_cold_data.values())
-    print(f"Warm test items: {len(warm_test_items)}, Cold test items: {len(cold_test_items)}")
-    print(f"Warm vs cold overlap: {len(warm_test_items & cold_test_items)}")
-    pretrained_emb = torch.FloatTensor(np.load(args.pretrained_emb + args.data_path + '/all_item_feature.npy', allow_pickle=True)).cuda()
-    feature_dim = pretrained_emb.size(1)
-    print("Sample train item IDs:", list(train_data.values())[0][:5])
-    print("Sample test item IDs:", list(test_data.values())[0][:5])
-    print("v_feat shape:", v_feat.shape)
-    # Use GAR_Dataset instead of DRO_Dataset
-    train_dataset = GAR_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, pretrained_emb, dataset='amazon')
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
-    print('Dataset loaded.')
+exclude_val_cold = get_exclude_pair_count(para_dict['cold_val_user'][:args.n_test_user], para_dict['cold_val_user_nb'],
+                                          args.test_batch_us)
+exclude_test_warm = get_exclude_pair_count(para_dict['warm_test_user'][:args.n_test_user],
+                                           para_dict['warm_test_user_nb'],
+                                           args.test_batch_us)
+exclude_test_cold = get_exclude_pair_count(para_dict['cold_test_user'][:args.n_test_user],
+                                           para_dict['cold_test_user_nb'],
+                                           args.test_batch_us)
+exclude_test_hybrid = get_exclude_pair_count(para_dict['hybrid_test_user'][:args.n_test_user],
+                                             para_dict['hybrid_test_user_nb'],
+                                             args.test_batch_us)
+timer.logging("Loaded excluded pairs for validation and test.")
 
-    model = GARModel(num_user, num_item, args.dim_E, feature_dim, alpha=args.alpha, beta=args.beta).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.l_r)
+# Model configuration
+device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
+model = GAR(args, user_emb.shape[-1], content_data.shape[-1]).to(device)
 
-    # Add ReduceLROnPlateau scheduler
-    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=10, verbose=True)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    max_recall = 0.0
-    num_decreases = 0
-    best_epoch = 0
-    topK = eval(args.topK)
-    max_val_result = max_test_result = max_test_result_warm = max_test_result_cold = None
+save_dir = './GAR/model_save/'
+os.makedirs(save_dir, exist_ok=True)
+save_path = save_dir + args.dataset + '-' + args.model + '-'
+param_file = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
+save_file = save_path + param_file
+args.param_file = param_file
+timer.logging('Model will be stored in ' + save_file)
 
-    torch.cuda.empty_cache()
-    for epoch in range(args.num_epoch):
-        epoch_start_time = time.time()
-        total_loss = 0.0
-        for user_tensor, item_tensor in train_dataloader:
-            user_tensor, item_tensor = user_tensor.to(device), item_tensor.to(device)
-            item_indices = item_tensor - num_user
-            print(f"item_indices min: {item_indices.min()}, max: {item_indices.max()}, shape: {item_indices.shape}")
-            if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
-                print(f"Invalid item indices: {item_indices}")
-                raise ValueError("Item indices out of bounds")
-            features = pretrained_emb[item_indices].to(device)
-            loss, _ = model.loss(user_tensor, item_tensor, features)
-    # Rest of the loop
-            optimizer.zero_grad()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        torch.cuda.empty_cache()
-        elapsed_time = time.time() - epoch_start_time
-        print(f"Epoch {epoch:03d}: Average Loss = {total_loss/len(train_dataloader):.4f}, Time = {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))}")
-        if torch.isnan(torch.tensor(total_loss)):
-            print("Loss is NaN. Exiting.")
-            break
+# Training
+timer.logging("Training model...")
+epoch = 0
+best_va_metric = 0
+patience_count = 0
+train_time = 0
+val_time = 0
+stop_flag = 0
+batch_count = 0
+item_index = np.arange(item_node_num)
 
-        if (epoch + 1) % 1 == 0:
-            with torch.no_grad():
-                model.result[:num_user] = model.user_embedding.weight
-                model.result[num_user:] = model.item_embedding.weight
-                val_result = full_ranking(model, val_data, train_dict, None, False, args.step, topK)
-                test_result = full_ranking(model, test_data, tv_dict, None, False, args.step, topK)
-                test_result_warm = full_ranking(model, test_warm_data, tv_dict, cold_item, False, args.step, topK)
-                test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, args.step, topK)
+for epoch in range(1, args.max_epoch + 1):
+    model.train()
+    train_input = utils.bpr_neg_samp(para_dict['warm_user'], len(train_data),
+                                     para_dict['emb_user_nb'], para_dict['warm_item'])
+    n_batch = len(train_input) // args.batch_size
+    for beg in range(0, len(train_input) - args.batch_size, args.batch_size):
+        end = beg + args.batch_size
+        batch_count += 1
+        t_train_begin = time.time()
+        batch_lbs = train_input[beg:end]
 
-            print('---' * 18)
-            print(f"Epoch {epoch:03d} Results")
-            print_results(None, val_result, test_result)
-            print('Warm Items:')
-            print_results(None, None, test_result_warm)
-            print('Cold Items:')
-            print_results(None, None, test_result_cold)
+        d_loss = model.train_d(user_emb[batch_lbs[:, 0]].to(device),
+                               item_emb[batch_lbs[:, 1]].to(device),
+                               item_emb[batch_lbs[:, 2]].to(device),
+                               content_data[batch_lbs[:, 1]].to(device))
+        g_loss = model.train_g(user_emb[batch_lbs[:, 0]].to(device),
+                               item_emb[batch_lbs[:, 1]].to(device),
+                               content_data[batch_lbs[:, 1]].to(device))
+        loss = d_loss + g_loss
+        t_train_end = time.time()
+        train_time += t_train_end - t_train_begin
 
-            # Update scheduler based on validation Recall@10
-            scheduler.step(val_result[1][0])
+        # Validation - interval can be float
+        if (batch_count % int(n_batch * args.val_interval) == 0) and (epoch >= args.val_start):
+            model.eval()
+            t_val_begin = time.time()
 
-            if val_result[1][0] > max_recall:
-                best_epoch = epoch
-                max_recall = val_result[1][0]
-                max_val_result = val_result
-                max_test_result = test_result
-                max_test_result_warm = test_result_warm
-                max_test_result_cold = test_result_cold
-                num_decreases = 0
-                if not os.path.exists(args.save_path):
-                    os.makedirs(args.save_path)
-                torch.save(model, f'{args.save_path}GAR_amazon.pth')
+            gen_user_emb = model.get_user_emb(user_emb)
+            gen_item_emb = model.get_item_emb(content_data, item_emb,
+                                              para_dict['warm_item'], para_dict['cold_item'])
+            va_metric, _ = ndcg.test(model.get_ranked_rating,
+                                     lambda u: model.get_user_rating(u, item_index, gen_user_emb, gen_item_emb),
+                                     ts_nei=para_dict['cold_val_user_nb'],
+                                     ts_user=para_dict['cold_val_user'][:args.n_test_user],
+                                     masked_items=para_dict['warm_item'],
+                                     exclude_pair_cnt=exclude_val_cold,
+                                     )
+            va_metric_current = va_metric['ndcg'][0]
+            if va_metric_current > best_va_metric:
+                best_va_metric = va_metric_current
+                torch.save(model.state_dict(), save_file)  # Save model weights
+                patience_count = 0
             else:
-                num_decreases += 1
-                if num_decreases > 20:
-                    print('Early stopping triggered.')
-                    # Check pretrained_emb quality or dataset loading if metrics don't improve
-                    if num_decreases == 20:
-                        print("Metrics not improving. Check pretrained_emb quality or dataset loading (e.g., ensure train_data and user_item_all_dict are correctly formatted).")
+                patience_count += 1
+                if patience_count > args.patience:
+                    stop_flag = 1
                     break
 
-    model = torch.load(f'{args.save_path}GAR_amazon.pth')
-    model.eval()
-    with torch.no_grad():
-        model.result[:num_user] = model.user_embedding.weight
-        model.result[num_user:] = model.item_embedding.weight
-        test_result = full_ranking(model, test_data, tv_dict, None, False, args.step, topK)
-        test_result_warm = full_ranking(model, test_warm_data, tv_dict, cold_item, False, args.step, topK)
-        test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, args.step, topK)
+            t_val_end = time.time()
+            val_time += t_val_end - t_val_begin
+            timer.logging('Epoch {}({}/{}) Loss: {:.4f}| Va_metric: {:.4f}| Best: {:.4f}| Time_Train: {:.2fs}| Val: {:.2fs}'.format(
+                epoch, patience_count, args.patience, loss, va_metric_current, best_va_metric, train_time, val_time))
 
-    print('===' * 18)
-    print(f"Training completed. Best epoch: {best_epoch}")
-    print('Validation Results:')
-    print_results(None, max_val_result, max_test_result)
-    print('Test Results:')
-    print('All Items:')
-    print_results(None, None, test_result)
-    print('Warm Items:')
-    print_results(None, None, test_result_warm)
-    print('Cold Items:')
-    print_results(None, None, test_result_cold)
-    print('---' * 18)
+    if stop_flag:
+        break
+
+# Test
+timer.logging("Testing model...")
+model.load_state_dict(torch.load(save_file))  # Load the best model
+
+# Cold recommendation
+model.eval()
+cold_res, _ = ndcg.test(model.get_ranked_rating,
+                        lambda u: model.get_user_rating(u, item_index, gen_user_emb, gen_item_emb),
+                        ts_nei=para_dict['cold_test_user_nb'],
+                        ts_user=para_dict['cold_test_user'][:args.n_test_user],
+                        masked_items=para_dict['warm_item'],
+                        exclude_pair_cnt=exclude_test_cold,
+                        )
+timer.logging(f'Cold-start recommendation result@{args.Ks[0]}: PRE, REC, NDCG: {cold_res["precision"][0]:.4f}, {cold_res["recall"][0]:.4f}, {cold_res["ndcg"][0]:.4f}')
+
+# Warm recommendation
+warm_res, _ = ndcg.test(model.get_ranked_rating,
+                        lambda u: model.get_user_rating(u, item_index, gen_user_emb, gen_item_emb),
+                        ts_nei=para_dict['warm_test_user_nb'],
+                        ts_user=para_dict['warm_test_user'][:args.n_test_user],
+                        masked_items=para_dict['cold_item'],
+                        exclude_pair_cnt=exclude_test_warm,
+                        )
+timer.logging(f"Warm recommendation result@{args.Ks[0]}: PRE, REC, NDCG: {warm_res['precision'][0]:.4f}, {warm_res['recall'][0]:.4f}, {warm_res['ndcg'][0]:.4f}")
+
+# Hybrid recommendation
+hybrid_res, _ = ndcg.test(model.get_ranked_rating,
+                          lambda u: model.get_user_rating(u, item_index, gen_user_emb, gen_item_emb),
+                          ts_nei=para_dict['hybrid_test_user_nb'],
+                          ts_user=para_dict['hybrid_test_user'][:args.n_test_user],
+                          masked_items=None,
+                          exclude_pair_cnt=exclude_test_hybrid,
+                          )
+timer.logging(f"Hybrid recommendation result@{args.Ks[0]}: PRE, REC, NDCG: {hybrid_res['precision'][0]:.4f}, {hybrid_res['recall'][0]:.4f}, {hybrid_res['ndcg'][0]:.4f}")
+
+# Save test results
+result_file = './GAR/result/'
+if not os.path.exists(result_file):
+    os.makedirs(result_file)
+with open(result_file + f'{args.model}.txt', 'a') as f:
+    f.write(str(vars(args)))
+    f.write(' | ')
+    for i in range(len(args.Ks)):
+        f.write(f'{cold_res["precision"][i]:.4f} {cold_res["recall"][i]:.4f} {cold_res["ndcg"][i]:.4f} ')
+    f.write(' | ')
+    for i in range(len(args.Ks)):
+        f.write(f'{warm_res["precision"][i]:.4f} {warm_res["recall"][i]:.4f} {warm_res["ndcg"][i]:.4f} ')
+    f.write(' | ')
+    for i in range(len(args.Ks)):
+        f.write(f'{hybrid_res["precision"][i]:.4f} {hybrid_res["recall"][i]:.4f} {hybrid_res["ndcg"][i]:.4f} ')
+    f.write('\n')
+
