@@ -42,10 +42,10 @@ class GAR_Dataset(torch.utils.data.Dataset):
             # Convert pos_item to tensor and get negative items
             neg_items = self._get_neg_items(pos_item, user)
             item_list = [pos_item] + neg_items  # Combine positive and negative items
-            self.user_tensor.append(user)
+            self.user_tensor.append(torch.tensor([user], dtype=torch.long))  # Ensure 1D tensor
             self.item_tensor.append(torch.tensor(item_list, dtype=torch.long))
 
-        self.user_tensor = torch.tensor(self.user_tensor, dtype=torch.long)
+        self.user_tensor = torch.cat(self.user_tensor, dim=0)  # Concatenate into a single tensor
         self.item_tensor = torch.stack(self.item_tensor, dim=0)
 
     def _get_neg_items(self, pos_item, user):
