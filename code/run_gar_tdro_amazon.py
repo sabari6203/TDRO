@@ -47,12 +47,11 @@ class GAR_Dataset(torch.utils.data.Dataset):
 
         self.user_tensor = torch.cat(self.user_tensor, dim=0)  # Concatenate into a single tensor
         self.item_tensor = torch.stack(self.item_tensor, dim=0)
-
     def _get_neg_items(self, pos_item, user):
         neg_items = []
         while len(neg_items) < self.num_neg:
             neg_item = np.random.randint(self.num_user, self.num_user + self.num_item)
-            if neg_item not in self.user_item_dict.get(user, []) and neg_item not in neg_items:
+            if neg_item not in self.user_item_dict.get(user, []) and neg_item not in neg_items and self.num_user <= neg_item < self.num_user + self.num_item:
                 neg_items.append(neg_item)
         return neg_items
 
@@ -220,11 +219,13 @@ if __name__ == '__main__':
         for user_tensor, item_tensor in train_dataloader:
             user_tensor, item_tensor = user_tensor.to(device), item_tensor.to(device)
             item_indices = item_tensor - num_user
+            print(f"item_indices min: {item_indices.min()}, max: {item_indices.max()}, shape: {item_indices.shape}")
             if (item_indices < 0).any() or (item_indices >= pretrained_emb.size(0)).any():
-                print(f"Invalid item indices: min {item_indices.min()}, max {item_indices.max()}, pretrained_emb size {pretrained_emb.size(0)}")
+                print(f"Invalid item indices: {item_indices}")
                 raise ValueError("Item indices out of bounds")
             features = pretrained_emb[item_indices].to(device)
             loss, _ = model.loss(user_tensor, item_tensor, features)
+    # Rest of the loop
             optimizer.zero_grad()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             loss.backward()
