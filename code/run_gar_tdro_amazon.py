@@ -3,6 +3,7 @@ import os
 import time
 import numpy as np
 import torch
+import torch.nn as nn
 import random
 from torch.utils.data import DataLoader
 from Dataset import data_load, DRO_Dataset
@@ -287,7 +288,7 @@ if __name__ == '__main__':
                 torch.save(model, f'{args.save_path}GAR_TDRO_amazon.pth')
             else:
                 num_decreases += 1
-                if num_decreases > 10:  # Enable early stopping
+                if num_decreases > 5:  # Enable early stopping
                     print('Early stopping triggered.')
                     break
 
