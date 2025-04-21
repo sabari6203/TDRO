@@ -3,6 +3,7 @@ import os
 import time
 import numpy as np
 import torch
+import torch.nn as nn
 import random
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -81,7 +82,7 @@ class GARModel(torch.nn.Module):
         real_output = disc_output[:batch_size]  # [batch_size, 1]
         fake_output = disc_output[batch_size:]  # [batch_size, 1]
         return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
-    import torch.nn as nn
+
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
         batch_size = user_tensor.size(0)
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(
