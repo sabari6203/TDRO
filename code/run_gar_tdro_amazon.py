@@ -60,7 +60,7 @@ class GAR_Dataset(torch.utils.data.Dataset):
         return len(self.user_tensor)
 
     def __getitem__(self, idx):
-        return self.user_tensor[idx], self.item_tensor[idx]
+        return self.user_tensor[idx].unsqueeze(0), self.item_tensor[idx]
 
 # GAR Model (without TDRO)
 class GARModel(torch.nn.Module):
