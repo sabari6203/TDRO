@@ -101,9 +101,9 @@ class GARModel(torch.nn.Module):
 
     def forward(self, user_ids, item_ids, features, training=False):
         # Debugging prints to check tensor shapes
-        print(f"user_ids shape: {user_ids.shape}")
-        print(f"item_ids shape: {item_ids.shape}")
-        print(f"features shape: {features.shape}")
+        # print(f"user_ids shape: {user_ids.shape}")
+        # print(f"item_ids shape: {item_ids.shape}")
+        # print(f"features shape: {features.shape}")
         
         user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
         batch_size, num_items = item_ids.size()  # [batch_size, 1 + num_neg]
