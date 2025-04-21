@@ -3,9 +3,9 @@ import os
 import time
 import numpy as np
 import torch
-import torch.nn as nn
 import random
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from Dataset import data_load, DRO_Dataset
 from Train import train_TDRO
 from Full_rank import full_ranking
@@ -82,16 +82,12 @@ class GARModel(torch.nn.Module):
         fake_output = disc_output[batch_size:]  # [batch_size, 1]
         return user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output
 
-
-
     def loss(self, user_tensor, item_tensor, group_tensor, period_tensor, features):
-        # Forward pass to get embeddings and outputs
         batch_size = user_tensor.size(0)
         user_emb, item_emb, feature_reps, gen_reps, real_output, fake_output = self.forward(
             user_tensor, item_tensor, features
         )
         
-        # Compute component losses
         pred_loss = torch.mean(torch.pow(user_emb.unsqueeze(1) - feature_reps.mean(dim=1), 2))
         d_loss = torch.mean(
             torch.nn.functional.binary_cross_entropy_with_logits(real_output, torch.ones_like(real_output)) +
@@ -103,7 +99,6 @@ class GARModel(torch.nn.Module):
         sim_loss = torch.mean(torch.abs(gen_reps.mean(dim=1) - item_emb.mean(dim=1)))
         total_loss = self.beta * pred_loss + self.alpha * (d_loss + (1 - self.alpha) * g_loss + self.alpha * sim_loss)
         
-        # Ensure group and period tensors are 1D
         group_tensor = group_tensor.squeeze()
         period_tensor = period_tensor.squeeze()
         if group_tensor.dim() != 1 or period_tensor.dim() != 1:
@@ -111,26 +106,21 @@ class GARModel(torch.nn.Module):
                 f"Expected 1D tensors, got group_tensor: {group_tensor.shape}, period_tensor: {period_tensor.shape}"
             )
         
-        # Compute period importance weights (beta_e) using softmax
         m = nn.Softmax(dim=0)
         beta_e = m(torch.tensor([torch.exp(self.p * e) for e in range(self.E)], device='cuda'))
         
-        # Compute period-specific gradients
         period_grads = []
         for e in range(self.E):
             grads_e = torch.zeros(self.dim_E, device='cuda')
             mask = (period_tensor == e)
             if mask.sum() > 0:
-                # Compute loss for samples in period e
                 loss_i = torch.pow(user_emb[mask] - feature_reps[mask].mean(dim=1), 2).mean()
                 grads = torch.autograd.grad(outputs=loss_i, inputs=feature_reps, retain_graph=True)[0]
                 grads_e += grads[mask].mean(dim=[0, 1]).detach()
             period_grads.append(grads_e)
         
-        # Compute shifting trend as a weighted average of period gradients
         shifting_trend = sum(beta_e[e] * period_grads[e] for e in range(self.E))
         
-        # Compute group losses and update historical group losses
         group_losses = torch.zeros(self.K, device='cuda')
         new_group_losses = self.group_losses.clone().detach()
         for i in range(batch_size):
@@ -138,25 +128,20 @@ class GARModel(torch.nn.Module):
             period = period_tensor[i].item()
             user_feature_reps = feature_reps[i].mean(dim=0)
             loss_i = torch.pow(user_emb[i] - user_feature_reps, 2).mean()
-            new_group_losses[group, period] = (
-                (1 - self.mu) * new_group_losses[group, period] + self.mu * loss_i
-            )
+            new_group_losses[group, period] = (1 - self.mu) * new_group_losses[group, period] + self.mu * loss_i
             group_losses[group] += loss_i
         group_counts = torch.bincount(group_tensor, minlength=self.K).float().cuda()
         group_losses /= group_counts.clamp(min=1)
         
-        # Compute shifting factors for each group
         shifting_factors = torch.zeros(self.K, device='cuda')
         for g in range(self.K):
             mask_g = (group_tensor == g)
             if mask_g.sum() > 0:
-                # Compute loss for group g
                 loss_g = torch.pow(user_emb[mask_g] - feature_reps[mask_g].mean(dim=1), 2).mean()
                 grads_g = torch.autograd.grad(outputs=loss_g, inputs=feature_reps, retain_graph=True)[0]
                 grads_g_mean = grads_g[mask_g].mean(dim=[0, 1]).detach()
                 shifting_factors[g] = torch.dot(grads_g_mean, shifting_trend)
         
-        # Update weights and compute final loss
         scores = (1 - self.lambda_) * group_losses - self.lambda_ * shifting_factors
         new_w = self.w * torch.exp(self.eta_w * ((1 - self.lambda_) * group_losses + self.lambda_ * shifting_factors))
         new_w /= new_w.sum()
@@ -170,12 +155,12 @@ def init():
     parser = argparse.ArgumentParser(description="Run GAR+TDRO on Amazon dataset")
     parser.add_argument('--seed', type=int, default=1, help='Random seed')
     parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size (64, 128, or 256)')
     parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
-    parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--l_r', type=float, default=5e-4, help='Initial learning rate')
     parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')
     parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
     parser.add_argument('--num_group', type=int, default=3, help='Number of groups for GAR')
@@ -226,6 +211,9 @@ if __name__ == '__main__':
     model = GARModel(num_user, num_item, args.dim_E, feature_dim, alpha=args.alpha, beta=args.beta, K=args.num_group, E=args.num_period, lambda_=args.lam, p=args.p, mu=args.mu, eta_w=args.eta).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.l_r)
 
+    # Add ReduceLROnPlateau scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=10, verbose=True)
+
     w_list = torch.ones(args.num_group).cuda()
     loss_list = torch.zeros(args.num_group).cuda()
     max_recall = 0.0
@@ -275,6 +263,9 @@ if __name__ == '__main__':
             print('Cold Items:')
             print_results(None, None, test_result_cold)
 
+            # Update scheduler based on validation Recall@10
+            scheduler.step(val_result[1][0])
+
             if val_result[1][0] > max_recall:
                 best_epoch = epoch
                 max_recall = val_result[1][0]
@@ -288,7 +279,7 @@ if __name__ == '__main__':
                 torch.save(model, f'{args.save_path}GAR_TDRO_amazon.pth')
             else:
                 num_decreases += 1
-                if num_decreases > 5:  # Enable early stopping
+                if num_decreases > 20:
                     print('Early stopping triggered.')
                     break
 
