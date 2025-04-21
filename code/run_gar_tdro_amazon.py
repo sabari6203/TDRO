@@ -107,7 +107,7 @@ class GARModel(torch.nn.Module):
         
         user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
         batch_size, num_items = item_ids.size()  # [batch_size, 1 + num_neg]
-        item_emb = self.item_embedding(item_ids - self.num_user)  # [batch_size, 1 + num_neg, dim_E]
+        item_emb = self.item_embedding(item_ids)  # [batch_size, 1 + num_neg, dim_E]
         features_flat = features.view(-1, self.feature_dim)  # [batch_size * (1 + num_neg), feature_dim]
         feature_reps_flat = self.feature_extractor(features_flat)  # [batch_size * (1 + num_neg), dim_E]
         feature_reps = feature_reps_flat.view(batch_size, num_items, self.dim_E)  # Reshape back
