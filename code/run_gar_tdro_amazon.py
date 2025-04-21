@@ -187,10 +187,15 @@ if __name__ == '__main__':
 
     warm_item = set([i_id.item() + num_user for i_id in torch.tensor(list(np.load(dir_str + '/warm_item.npy', allow_pickle=True).item()))])
     cold_item = set([i_id.item() + num_user for i_id in torch.tensor(list(np.load(dir_str + '/cold_item.npy', allow_pickle=True).item()))])
-
+    warm_test_items = set().union(*test_warm_data.values())
+    cold_test_items = set().union(*test_cold_data.values())
+    print(f"Warm test items: {len(warm_test_items)}, Cold test items: {len(cold_test_items)}")
+    print(f"Warm vs cold overlap: {len(warm_test_items & cold_test_items)}")
     pretrained_emb = torch.FloatTensor(np.load(args.pretrained_emb + args.data_path + '/all_item_feature.npy', allow_pickle=True)).cuda()
     feature_dim = pretrained_emb.size(1)
-
+    print("Sample train item IDs:", list(train_data.values())[0][:5])
+    print("Sample test item IDs:", list(test_data.values())[0][:5])
+    print("v_feat shape:", v_feat.shape)
     # Use GAR_Dataset instead of DRO_Dataset
     train_dataset = GAR_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, args.num_neg, pretrained_emb, dataset='amazon')
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate, drop_last=True)
