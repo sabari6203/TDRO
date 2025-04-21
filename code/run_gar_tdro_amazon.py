@@ -39,14 +39,11 @@ class GAR_Dataset(torch.utils.data.Dataset):
         self.item_tensor = []
         
         for user, pos_item in self.train_data:
-            # Add positive item
-            self.user_tensor.append(user)
-            self.item_tensor.append(pos_item)
-            
-            # Add negative items
+            # Convert pos_item to tensor and get negative items
             neg_items = self._get_neg_items(pos_item, user)
+            item_list = [pos_item] + neg_items  # Combine positive and negative items
             self.user_tensor.append(user)
-            self.item_tensor.append(torch.tensor([pos_item] + neg_items))
+            self.item_tensor.append(torch.tensor(item_list, dtype=torch.long))
 
         self.user_tensor = torch.tensor(self.user_tensor, dtype=torch.long)
         self.item_tensor = torch.stack(self.item_tensor, dim=0)
