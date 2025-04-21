@@ -2,7 +2,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from model import GAR  # Assuming the GAR model is defined in model.py
-from dataset import Dataset  # Assuming Dataset handles Amazon data loading
+from Dataset import Dataset  # Assuming Dataset handles Amazon data loading
 
 def train_gar(args):
     # Load the dataset
