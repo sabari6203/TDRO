@@ -100,6 +100,11 @@ class GARModel(torch.nn.Module):
         self.item_embedding = torch.nn.Embedding(num_item, dim_E)
 
     def forward(self, user_ids, item_ids, features, training=False):
+        # Debugging prints to check tensor shapes
+        print(f"user_ids shape: {user_ids.shape}")
+        print(f"item_ids shape: {item_ids.shape}")
+        print(f"features shape: {features.shape}")
+        
         user_emb = self.user_embedding(user_ids)  # [batch_size, dim_E]
         batch_size, num_items = item_ids.size()  # [batch_size, 1 + num_neg]
         item_emb = self.item_embedding(item_ids - self.num_user)  # [batch_size, 1 + num_neg, dim_E]
@@ -144,13 +149,13 @@ def init():
     parser = argparse.ArgumentParser(description="Run GAR on Amazon dataset")
     parser.add_argument('--seed', type=int, default=1, help='Random seed')
     parser.add_argument('--data_path', default='amazon', help='Dataset path (set to amazon)')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size')  # Updated to 256
     parser.add_argument('--num_epoch', type=int, default=1000, help='Number of epochs')
     parser.add_argument('--num_workers', type=int, default=1, help='Number of data loader workers')
     parser.add_argument('--topK', default='[10, 20, 50, 100]', help='Top-K recommendation list')
     parser.add_argument('--step', type=int, default=2000, help='Step size for ranking')
     parser.add_argument('--l_r', type=float, default=5e-4, help='Initial learning rate')
-    parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension')
+    parser.add_argument('--dim_E', type=int, default=256, help='Embedding dimension')  # Updated to 256
     parser.add_argument('--num_neg', type=int, default=128, help='Number of negative samples')
     parser.add_argument('--alpha', type=float, default=0.5, help='Coefficient for adversarial loss')
     parser.add_argument('--beta', type=float, default=0.6, help='Coefficient for interaction prediction loss')
@@ -262,6 +267,9 @@ if __name__ == '__main__':
                 num_decreases += 1
                 if num_decreases > 20:
                     print('Early stopping triggered.')
+                    # Check pretrained_emb quality or dataset loading if metrics don't improve
+                    if num_decreases == 20:
+                        print("Metrics not improving. Check pretrained_emb quality or dataset loading (e.g., ensure train_data and user_item_all_dict are correctly formatted).")
                     break
 
     model = torch.load(f'{args.save_path}GAR_amazon.pth')
