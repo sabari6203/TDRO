@@ -9,13 +9,17 @@ def full_ranking(model, data, user_item_inter, mask_items, is_training, step, to
         mask_items = torch.LongTensor(list(mask_items)).cuda()
     
     with no_grad():
-        # Get item embeddings for ranking
+        # Get user and item embeddings for ranking
+        user_emb = model.get_user_emb(model.id_embedding[:model.num_user])  # Transformed user embeddings
         content = model.feature_extractor()  # Multimodal features for cold items
         item_emb = model.id_embedding[model.num_user:model.num_user + model.num_item]
-        item_emb = model.get_item_emb(content, item_emb)  # Transformed embeddings (warm + cold)
+        item_emb = model.get_item_emb(content, item_emb)  # Transformed item embeddings (warm + cold)
         
-        # Pass item embeddings to rank function
-        all_index_of_rank_list = rank(model.num_user, user_item_inter, mask_items, item_emb, is_training, step, topk[-1])
+        # Concatenate user and item embeddings to match rank's expected 'result' format
+        result = torch.cat([user_emb, item_emb], dim=0)  # Shape: (num_user + num_item, dim_E)
+        
+        # Pass result to rank function
+        all_index_of_rank_list = rank(model.num_user, user_item_inter, mask_items, result, is_training, step, topk[-1])
         
         gt_list = [None for _ in range(model.num_user)]
         for u_id in data:
