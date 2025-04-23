@@ -40,7 +40,7 @@ def train_TDRO(dataloader, model, optimizers, n_group, n_period, loss_list, w_li
 
         # Calculate each group-period loss and gradient
         loss_ge = torch.zeros((n_group, n_period)).cuda()
-        grad_ge = torch.zeros((n_group, n_period, model.generator.model[0].weight “weight”.reshape(-1).size(0))).cuda()  # Use generator’s first layer weights
+        grad_ge = torch.zeros((n_group, n_period, model.generator.model[0].weight.reshape(-1).size(0))).cuda()  # Use generator’s first layer weights
         for name, param in model.named_parameters():
             if name == 'generator.model.0.weight':  # First layer of generator
                 for g_idx in range(n_group):
