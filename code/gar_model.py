@@ -82,13 +82,16 @@ class GAR(nn.Module):
     def loss(self, user, item):
         print(f"loss: user.shape={user.shape}, item.shape={item.shape}")
         content = self.feature_extractor()
-        user_emb = self.id_embedding(user)
-        item_emb = self.id_embedding(self.num_user + item)  # Select batch item embeddings
+        user_emb = self.id_embedding(user)  # Shape: (batch_size, dim_E)
+        item_indices = self.num_user + item  # Shape: (batch_size, 257)
+        item_emb = self.id_embedding(item_indices)  # Shape: (batch_size, 257, dim_E)
         user_emb = self.get_user_emb(user_emb)
-        all_item_emb = self.id_embedding[self.num_user:self.num_user + self.num_item]  # All item embeddings
-        item_emb = self.get_item_emb(content, all_item_emb)[item]  # Apply cold item generation for batch
-        pos_score = torch.sum(user_emb * item_emb[:, 0], dim=-1)
-        neg_score = torch.sum(user_emb.unsqueeze(1) * item_emb[:, 1:], dim=-1)
+        all_item_indices = torch.arange(self.num_user, self.num_user + self.num_item, device=user.device)  # Shape: (num_item,)
+        all_item_emb = self.id_embedding(all_item_indices)  # Shape: (num_item, dim_E)
+        all_item_emb = self.get_item_emb(content, all_item_emb)  # Shape: (num_item, dim_E)
+        item_emb = all_item_emb[item]  # Shape: (batch_size, 257, dim_E)
+        pos_score = torch.sum(user_emb * item_emb[:, 0], dim=-1)  # Shape: (batch_size,)
+        neg_score = torch.sum(user_emb.unsqueeze(1) * item_emb[:, 1:], dim=-1)  # Shape: (batch_size, 256)
         g_loss = -torch.mean(F.logsigmoid(pos_score - neg_score))
         d_user_score = self.discriminator_user(user_emb)
         d_item_score = self.discriminator_item(item_emb[:, 0])
