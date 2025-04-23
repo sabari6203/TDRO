@@ -59,7 +59,11 @@ def data_load(dataset):
         num_item = 86483
         num_warm_item = 74470
         pca_feat = np.load(dir_str + '/img_pca_map.npy', allow_pickle=True)
-        v_feat = torch.tensor(pca_feat,dtype=torch.float).cuda()
+        v_feat = np.zeros((num_item, pca_feat.shape[1]))
+        for i_id in range(num_item):
+            if i_id in pca_feat:
+                v_feat[i_id] = pca_feat[i_id]
+        v_feat = torch.tensor(v_feat, dtype=torch.float).cuda()
         a_feat = None
         t_feat = None
 
@@ -277,13 +281,23 @@ class DRO_Dataset(Dataset):
         elif split_mode=='global':
             self.gen_env_global(train_data, n_env)
 
-    def gen_group(self,pretrained_iemb,n_group,train_data):
+    def gen_group(self, pretrained_iemb, n_group, train_data):
         rep = pretrained_iemb.cuda()
+        # Combine pretrained embeddings with multimodal features for cold items
+        if self.dataset in ['amazon', 'micro-video', 'kwai']:
+            feat = torch.zeros_like(rep).cuda()
+            if self.dataset == 'amazon':
+                feat = F.normalize(self.v_feat, dim=1)
+            elif self.dataset == 'micro-video':
+                feat = F.normalize(torch.cat([self.v_feat, self.t_feat], dim=1), dim=1)
+            elif self.dataset == 'kwai':
+                feat = F.normalize(self.v_feat, dim=1)
+            # Use pretrained embeddings for warm items, features for cold items
+            rep[list(self.all_set - set(range(self.num_user, self.num_user + self.num_item)))] = feat[list(self.cold_set - set(range(self.num_user, self.num_user + self.num_item)))]
         cluster_ids = torch.zeros(self.num_item).long()
-        warm_id = torch.LongTensor([wid-self.num_user for wid in self.all_set])
-        if n_group>1:
-            cluster_ids_, _ = kmeans(X=rep[warm_id], num_clusters=n_group, distance='euclidean', device=torch.device('cuda:0'))
-            cluster_ids[warm_id] = cluster_ids_.detach().cpu()
+        if n_group > 1:
+            cluster_ids_, _ = kmeans(X=rep, num_clusters=n_group, distance='euclidean', device=torch.device('cuda:0'))
+            cluster_ids = cluster_ids_.detach().cpu()
         self.i_group = cluster_ids
 
     def ui2env(self, i_time, t_ref):
@@ -379,7 +393,8 @@ class DRO_Dataset(Dataset):
 
     def __getitem__(self, index):
         user, pos_item, e_pos, g_pos = self.train_data[index]
-        neg_item = random.sample(list(self.all_set - set(self.user_item_dict[user])), self.num_neg)
+        # Sample from all items, including cold items
+        neg_item = random.sample(list(set(range(self.num_user, self.num_user + self.num_item)) - set(self.user_item_dict[user])), self.num_neg)
     
         user_tensor = torch.LongTensor([user])  # [1]
         item_tensor = torch.LongTensor([pos_item] + neg_item)  # [1 + num_neg]
