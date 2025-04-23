@@ -1,3 +1,4 @@
+# [Previous imports and init() function unchanged]
 import argparse
 import os
 import time
@@ -15,51 +16,38 @@ def init():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1, help='Seed init.')
     parser.add_argument('--no-cuda', action='store_true', default=False, help='Disables CUDA training.')
-    parser.add_argument('--data_path', default='kwai_small', help='Dataset path')
-    parser.add_argument('--model_name', default='GAR', help='Model Name.')
-    parser.add_argument('--log_name', default='', help='log name.')
-
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size.')
+    parser.add_argument('--data_path', default='amazon', help='Dataset path')
+    parser.add_argument('--model_name', default='TDRO', help='Model Name.')
+    parser.add_argument('--log_name', default='log', help='log name.')
+    parser.add_argument('--batch_size', type=int, default=1000, help='Batch size.')
     parser.add_argument('--num_epoch', type=int, default=200, help='Epoch number.')
     parser.add_argument('--num_workers', type=int, default=1, help='Workers number.')
     parser.add_argument("--topK", default='[10, 20, 50, 100]', help="the recommended item num")
     parser.add_argument('--step', type=int, default=2000, help='Workers number.')
-
     parser.add_argument('--l_r', type=float, default=1e-3, help='Learning rate.')
     parser.add_argument('--dim_E', type=int, default=128, help='Embedding dimension.')
     parser.add_argument('--reg_weight', type=float, default=1e-3, help='Weight decay.')
-
-    # GAR (aligned with CLCRec inputs)
     parser.add_argument('--num_neg', type=int, default=256, help='Negative size.')
     parser.add_argument('--contrastive', type=float, default=0.1, help='Unused, kept for compatibility.')
     parser.add_argument('--num_sample', type=float, default=0.5, help='Probability of robust training.')
     parser.add_argument('--temp_value', type=float, default=0.1, help='Unused, kept for compatibility.')
-    
     parser.add_argument('--pretrained_emb', type=str, default='./pretrained_emb/', help='path of pretrained embedding of items')
-
-    # Group-DRO
-    parser.add_argument('--num_group', type=int, default=1, help='group number for group DRO')
-    parser.add_argument('--mu', type=float, default=0.5, help='streaming learning rate for group DRO')
-    parser.add_argument('--eta', type=float, default=0.01, help='step size for group DRO')
-
-    # TDRO
-    parser.add_argument('--num_period', type=int, default=1, help='time period number for TDRO')
+    parser.add_argument('--num_group', type=int, default=5, help='group number for group DRO')
+    parser.add_argument('--mu', type=float, default=0.2, help='streaming learning rate for group DRO')
+    parser.add_argument('--eta', type=float, default=0.2, help='step size for group DRO')
+    parser.add_argument('--num_period', type=int, default=5, help='time period number for TDRO')
     parser.add_argument('--split_mode', type=str, default='global', help='split the group by global time or relative interactions per user', choices=['relative','global'])
-    parser.add_argument('--lam', type=float, default=0.5, help='coefficient for time-aware shifting trend')
+    parser.add_argument('--lam', type=float, default=0.3, help='coefficient for time-aware shifting trend')
     parser.add_argument('--p', type=float, default=0.2, help='strength of gradient (see more in common good)')
-
-    # group evaluation
     parser.add_argument('--group_test', action='store_true', help='whether or not do evaluation of user/item groups')
     parser.add_argument('--portion_list', type=str, help='portion list of different groups')
-
     parser.add_argument('--gpu', default='0', help='gpu id')
     parser.add_argument('--save_path', default='./models/', help='model save path')
-    parser.add_argument('--inference',action='store_true', help='only inference stage')
+    parser.add_argument('--inference', action='store_true', help='only inference stage')
     parser.add_argument('--ckpt', type=str, help='pretrained model path')
     
     args = parser.parse_args()
     return args
-
 
 if __name__ == '__main__':
     args = init()
@@ -83,26 +71,21 @@ if __name__ == '__main__':
     num_neg = args.num_neg
     num_sample = args.num_sample
     topK = eval(args.topK)
-
     num_group = args.num_group
     num_period = args.num_period
     mu = args.mu
     eta = args.eta
     lam = args.lam
     p = args.p
-    
     temp_value = args.temp_value
     step = args.step
     portion_list = eval(args.portion_list) if args.inference else None
-
     dim_E = args.dim_E
     contrastive = args.contrastive
     ##########################################################################################################################################
     print('Data loading ...')
-
     num_user, num_item, num_warm_item, train_data, val_data, val_warm_data, val_cold_data, test_data, test_warm_data, test_cold_data, v_feat, a_feat, t_feat = data_load(data_path)
     dir_str = f'../data/{args.data_path}'
-
     user_item_all_dict = {}
     train_dict = {}
     tv_dict = {}
@@ -112,18 +95,13 @@ if __name__ == '__main__':
         tv_dict[u_id] = train_data[u_id] + val_data[u_id]
     warm_item = torch.tensor(list(np.load(dir_str + '/warm_item.npy', allow_pickle=True).item()), dtype=torch.long)
     cold_item = torch.tensor(list(np.load(dir_str + '/cold_item.npy', allow_pickle=True).item()), dtype=torch.long)
-    warm_item = list([i_id.item() + num_user for i_id in warm_item])  # Convert set to list
-    cold_item = list([i_id.item() + num_user for i_id in cold_item])  # Convert set to list
-
-    # pretrained item embedding
+    warm_item = list([i_id.item() + num_user for i_id in warm_item])
+    cold_item = list([i_id.item() + num_user for i_id in cold_item])
     pretrained_emb = np.load(args.pretrained_emb + data_path + '/all_item_feature.npy', allow_pickle=True)
     pretrained_emb = torch.FloatTensor(pretrained_emb).cuda()
-
-    train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, set(cold_item), train_data, num_neg, num_group, num_period, split_mode, pretrained_emb)
+    train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, set(cold_item), train_data, num_neg, num_group, num_period, split_mode, pretrained_emb, v_feat, a_feat, t_feat)
     train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=num_workers)
-    
     print('Data has been loaded.')
-
     ##########################################################################################################################################
     model = GAR(warm_item, cold_item, num_user, num_item, reg_weight, dim_E, v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample).cuda()
     ##########################################################################################################################################
@@ -142,7 +120,6 @@ if __name__ == '__main__':
             print_results(None, None, test_result_cold)
         os._exit(1)
     ##########################################################################################################################################
-    # Separate optimizers for generator and discriminator
     g_optimizer = torch.optim.Adam(model.generator.parameters(), lr=learning_rate, weight_decay=1e-3)
     d_optimizer = torch.optim.Adam(
         list(model.discriminator_user.parameters()) + list(model.discriminator_item.parameters()),
@@ -159,41 +136,33 @@ if __name__ == '__main__':
     loss_list = torch.zeros(num_group).cuda()
     for epoch in range(num_epoch):
         epoch_start_time = time.time()
-
         loss = train_TDRO(train_dataloader, model, (g_optimizer, d_optimizer), num_group, num_period, loss_list, w_list, mu, eta, lam, p)
-        
         elapsed_time = time.time() - epoch_start_time
         print("Train: The time elapse of epoch {:03d}".format(epoch) + " is: " + 
                 time.strftime("%H: %M: %S", time.gmtime(elapsed_time)))
-
         if torch.isnan(loss):
             print("Loss is Nan. Quit.")
             break
         torch.cuda.empty_cache()
         if (epoch+1)%1==0:    
             test_result = None
-
             with torch.no_grad():
                 val_result = full_ranking(model, val_data, train_dict, None, False, step, topK)
                 test_result = full_ranking(model, test_data, tv_dict, None, False, step, topK)
                 test_result_warm = full_ranking(model, test_warm_data, tv_dict, cold_item, False, step, topK)
                 test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, step, topK)
-                
             print('---'*18)
             print("Runing Epoch {:03d} ".format(epoch) + " costs " + time.strftime(
                                 "%H: %M: %S", time.gmtime(time.time()-epoch_start_time)))
             print_results(None, val_result, test_result)
             print_results(None, None, test_result_warm)
             print_results(None, None, test_result_cold)
-
             print('---'*18)
-
             if val_result[1][0] > max_recall:
                 best_epoch = epoch
                 pre_id_embedding = model.id_embedding
                 max_recall = val_result[1][0]
                 max_val_result = val_result
-
                 max_test_result = test_result
                 max_test_result_warm = test_result_warm
                 max_test_result_cold = test_result_cold
@@ -220,7 +189,6 @@ if __name__ == '__main__':
         test_result = full_ranking(model, test_data, tv_dict, None, False, step, topK)
         test_result_warm = full_ranking(model, test_warm_data, tv_dict, cold_item, False, step, topK)
         test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, step, topK)
-
     print('==='*18)
     print(f"End. Best Epoch is {best_epoch}")
     print('---'*18)
