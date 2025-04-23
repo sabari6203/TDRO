@@ -4,12 +4,12 @@ import time
 import numpy as np
 import torch
 import random
-from Dataset import data_load, DRO_Dataset
+from Dataset_gar import data_load, DRO_Dataset
 from gar_model import GAR
 from torch.utils.data import DataLoader
-from Train import train_TDRO
-from Full_rank import full_ranking
-from Metric import print_results
+from Train_gar import train_TDRO
+from Full_rank_gar import full_ranking
+from Metric_gar import print_results
 
 def init():
     parser = argparse.ArgumentParser()
@@ -110,16 +110,16 @@ if __name__ == '__main__':
         user_item_all_dict[u_id] = train_data[u_id] + val_data[u_id] + test_data[u_id]
         train_dict[u_id] = train_data[u_id]
         tv_dict[u_id] = train_data[u_id] + val_data[u_id]
-    warm_item = torch.tensor(list(np.load(dir_str + '/warm_item.npy',allow_pickle=True).item()))
-    cold_item = torch.tensor(list(np.load(dir_str + '/cold_item.npy',allow_pickle=True).item()))
-    warm_item = set([i_id.item() + num_user for i_id in warm_item])    # item id = item_id_org + user num
-    cold_item = set([i_id.item() + num_user for i_id in cold_item])
+    warm_item = torch.tensor(list(np.load(dir_str + '/warm_item.npy', allow_pickle=True).item()), dtype=torch.long)
+    cold_item = torch.tensor(list(np.load(dir_str + '/cold_item.npy', allow_pickle=True).item()), dtype=torch.long)
+    warm_item = list([i_id.item() + num_user for i_id in warm_item])  # Convert set to list
+    cold_item = list([i_id.item() + num_user for i_id in cold_item])  # Convert set to list
 
     # pretrained item embedding
-    pretrained_emb = np.load(args.pretrained_emb+data_path+'/all_item_feature.npy',allow_pickle=True)
+    pretrained_emb = np.load(args.pretrained_emb + data_path + '/all_item_feature.npy', allow_pickle=True)
     pretrained_emb = torch.FloatTensor(pretrained_emb).cuda()
 
-    train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, cold_item, train_data, num_neg, num_group, num_period, split_mode, pretrained_emb)
+    train_dataset = DRO_Dataset(num_user, num_item, user_item_all_dict, set(cold_item), train_data, num_neg, num_group, num_period, split_mode, pretrained_emb)
     train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=num_workers)
     
     print('Data has been loaded.')
@@ -135,11 +135,11 @@ if __name__ == '__main__':
             test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, step, topK)
             print('---'*18)
             print('All')
-            print_results(None,None,test_result)
+            print_results(None, None, test_result)
             print('Warm')
-            print_results(None,None,test_result_warm)
+            print_results(None, None, test_result_warm)
             print('Cold')
-            print_results(None,None,test_result_cold)
+            print_results(None, None, test_result_cold)
         os._exit(1)
     ##########################################################################################################################################
     # Separate optimizers for generator and discriminator
@@ -182,14 +182,14 @@ if __name__ == '__main__':
             print('---'*18)
             print("Runing Epoch {:03d} ".format(epoch) + " costs " + time.strftime(
                                 "%H: %M: %S", time.gmtime(time.time()-epoch_start_time)))
-            print_results(None,val_result,test_result)
-            print_results(None,None,test_result_warm)
-            print_results(None,None,test_result_cold)
+            print_results(None, val_result, test_result)
+            print_results(None, None, test_result_warm)
+            print_results(None, None, test_result_cold)
 
             print('---'*18)
 
             if val_result[1][0] > max_recall:
-                best_epoch=epoch
+                best_epoch = epoch
                 pre_id_embedding = model.id_embedding
                 max_recall = val_result[1][0]
                 max_val_result = val_result
@@ -225,12 +225,12 @@ if __name__ == '__main__':
     print(f"End. Best Epoch is {best_epoch}")
     print('---'*18)
     print('Validation')
-    print_results(None,max_val_result,max_test_result)
+    print_results(None, max_val_result, max_test_result)
     print('Test')
     print('All')
     print_results(None, None, test_result)
     print('Warm')
-    print_results(None,None,test_result_warm)
+    print_results(None, None, test_result_warm)
     print('Cold')
-    print_results(None,None,test_result_cold)
+    print_results(None, None, test_result_cold)
     print('---'*18)
