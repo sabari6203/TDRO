@@ -243,23 +243,36 @@ class DRO_Dataset(Dataset):
             self.group[u_id] = max(set(u_group), key=u_group.count)
 
     def gen_env_global(self, n_period, train_data):
+        self.env = [0 for _ in range(self.num_user)]
+        if n_period == 1:
+            # Assign all users to period 0 if only one period
+            return
         dir_str = '../data/' + self.dataset
         item_time_dict = np.load(dir_str + '/item_time_dict.npy', allow_pickle=True).item()
         item_map_reverse = np.load(dir_str + '/item_map_reverse.npy', allow_pickle=True).item()
         time_list = []
         for i_id in item_time_dict:
+            if i_id not in item_map_reverse:
+                continue  # Skip items not in item_map_reverse
             if item_map_reverse[i_id] + self.num_user in train_data:
                 time_list.append(item_time_dict[i_id])
         time_list = sorted(time_list)
+        if not time_list:
+            print("Warning: time_list is empty, assigning all users to period 0")
+            return
         time_split = [time_list[int(len(time_list) * i / n_period)] for i in range(n_period)]
         time_split.append(float('inf'))
-        self.env = [0 for _ in range(self.num_user)]
         for u_id in train_data:
             if len(train_data[u_id]) == 0:
                 continue
             u_time = []
             for i_id in train_data[u_id]:
-                u_time.append(item_time_dict[item_map_reverse[i_id - self.num_user]])
+                orig_i_id = [k for k, v in item_map_reverse.items() if v == i_id - self.num_user]
+                if orig_i_id and orig_i_id[0] in item_time_dict:
+                    u_time.append(item_time_dict[orig_i_id[0]])
+            if not u_time:
+                self.env[u_id] = 0
+                continue
             u_time = sorted(u_time)[0]
             for i, t in enumerate(time_split):
                 if u_time <= t:
@@ -268,6 +281,8 @@ class DRO_Dataset(Dataset):
 
     def gen_env_relative(self, n_period, user_item_all_dict):
         self.env = [0 for _ in range(self.num_user)]
+        if n_period == 1:
+            return
         for u_id in user_item_all_dict:
             if len(user_item_all_dict[u_id]) == 0:
                 continue
