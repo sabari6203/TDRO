@@ -211,20 +211,29 @@ class DRO_Dataset(Dataset):
                 item_cnt[i_id] = item_cnt.get(i_id, 0) + 1
         warm_item = list(item_cnt.keys())
         all_item = warm_item + [i_id for i_id in range(self.num_user, self.num_user + self.num_item) if i_id not in warm_item]
-        rep = torch.zeros((len(all_item), 64)).cuda()  # Default dim=64 for features
-        if self.dataset in ['amazon', 'micro-video', 'kwai']:
-            feat = torch.zeros_like(rep).cuda()
-            if self.dataset == 'amazon':
-                feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
-            elif self.dataset == 'micro-video':
-                feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
-                if self.t_feat is not None:
-                    feat += F.normalize(self.t_feat, dim=1)
-            elif self.dataset == 'kwai':
-                feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
-            rep = feat
-        cluster_ids, _ = kmeans(X=rep, num_clusters=n_group, distance='cosine', device=torch.device('cuda:0'))
-        item_group = {all_item[i]: int(cluster_ids[i]) for i in range(len(all_item))}
+        if n_group == 1:
+            # Assign all items to group 0 if only one cluster
+            item_group = {i_id: 0 for i_id in all_item}
+        else:
+            rep = torch.zeros((len(all_item), 64)).cuda()  # Default dim=64 for features
+            if self.dataset in ['amazon', 'micro-video', 'kwai']:
+                feat = torch.zeros_like(rep).cuda()
+                if self.dataset == 'amazon':
+                    feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
+                elif self.dataset == 'micro-video':
+                    feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
+                    if self.t_feat is not None:
+                        feat += F.normalize(self.t_feat, dim=1)
+                elif self.dataset == 'kwai':
+                    feat = F.normalize(self.v_feat, dim=1) if self.v_feat is not None else feat
+                rep = feat
+            print(f"gen_group: rep.shape={rep.shape}, v_feat.shape={self.v_feat.shape if self.v_feat is not None else None}, n_group={n_group}")
+            # Check for invalid values
+            if torch.isnan(rep).any() or torch.isinf(rep).any():
+                print("Warning: rep contains NaN or inf values")
+                rep = torch.where(torch.isnan(rep) | torch.isinf(rep), torch.zeros_like(rep), rep)
+            cluster_ids, _ = kmeans(X=rep, num_clusters=n_group, distance='cosine', device=torch.device('cuda:0'))
+            item_group = {all_item[i]: int(cluster_ids[i]) for i in range(len(all_item))}
         for u_id in train_data:
             if len(train_data[u_id]) == 0:
                 continue
