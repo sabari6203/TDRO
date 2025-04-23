@@ -103,8 +103,10 @@ class GAR(nn.Module):
         reg_loss = self.reg_weight * (torch.mean(user_emb**2) + torch.mean(item_emb**2))
         sim_loss = 0
         if self.contrastive > 0:
-            pos_sim = torch.sum(item_emb[:, 0] * item_emb[:, 1:self.num_neg//2 + 1], dim=-1)
-            neg_sim = torch.sum(item_emb[:, 0] * item_emb[:, self.num_neg//2 + 1:], dim=-1)
+            pos_neg_emb = item_emb[:, 1:self.num_neg//2 + 1]  # Shape: (batch_size, num_neg//2, dim_E)
+            neg_neg_emb = item_emb[:, self.num_neg//2 + 1:]  # Shape: (batch_size, num_neg//2, dim_E)
+            pos_sim = torch.sum(item_emb[:, 0:1] * pos_neg_emb, dim=-1)  # Shape: (batch_size, num_neg//2)
+            neg_sim = torch.sum(item_emb[:, 0:1] * neg_neg_emb, dim=-1)  # Shape: (batch_size, num_neg//2)
             sim_loss = -torch.mean(F.logsigmoid((pos_sim - neg_sim) / self.temp_value))
         total_loss = g_loss + d_loss + reg_loss + self.contrastive * sim_loss
         return total_loss, (g_loss, d_loss, reg_loss, sim_loss)
