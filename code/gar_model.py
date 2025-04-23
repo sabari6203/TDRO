@@ -94,8 +94,8 @@ class GAR(nn.Module):
         all_item_emb = self.get_item_emb(content, all_item_emb)  # Shape: (num_item, dim_E)
         item_emb = all_item_emb[item - self.num_user]  # Shape: (batch_size, 257, dim_E)
         pos_score = torch.sum(user_emb * item_emb[:, 0], dim=-1)  # Shape: (batch_size,)
-        neg_score = torch.sum(user_emb.unsqueeze(1) * item_emb[:, 1:], dim=-1)  # Shape: (batch_size, 256)
-        g_loss = -torch.mean(F.logsigmoid(pos_score - neg_score))
+        neg_score = torch.sum(user_emb.unsqueeze(1) * item_emb[:, 1:], dim=-1)  # Shape: (batch_size, num_neg)
+        g_loss = -torch.mean(F.logsigmoid(pos_score.unsqueeze(1) - neg_score))  # Shape: (batch_size, num_neg) -> scalar
         d_user_score = self.discriminator_user(user_emb)
         d_item_score = self.discriminator_item(item_emb[:, 0])
         d_loss = torch.mean(F.binary_cross_entropy_with_logits(d_user_score, torch.ones_like(d_user_score)) +
