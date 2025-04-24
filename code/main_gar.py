@@ -113,14 +113,14 @@ if __name__ == '__main__':
             test_result = full_ranking(model, test_data, tv_dict, None, False, step, topK)
             test_result_warm = full_ranking(model, test_warm_data, tv_dict, cold_item, False, step, topK)
             test_result_cold = full_ranking(model, test_cold_data, tv_dict, warm_item, False, step, topK)
-            print('--- filth18)
+            print('---'*18)
             print('All')
             print_results(None, None, test_result)
             print('Warm')
             print_results(None, None, test_result_warm)
             print('Cold')
             print_results(None, None, test_result_cold)
-        os._exit(1)
+        os._exit(0)
     ##########################################################################################################################################
     g_optimizer = torch.optim.Adam(model.generator.parameters(), lr=learning_rate, weight_decay=1e-3)
     d_optimizer = torch.optim.Adam(
