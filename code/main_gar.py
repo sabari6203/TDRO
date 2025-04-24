@@ -1,4 +1,4 @@
-from model_gar import GARModel  # Assuming the GAR model is saved as model_gar.py
+from gar_model import GARModel  # Assuming the GAR model is saved as model_gar.py
 from Dataset import data_load  # Use your updated data loading function
 
 if __name__ == '__main__':
