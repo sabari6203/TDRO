@@ -85,6 +85,8 @@ if __name__ == '__main__':
     num_neg = args.num_neg
     num_sample = args.num_sample
     topK = eval(args.topK)
+    adv_coeff=args.adv_coeff
+    pred_coeff=args.pred_coeff
 
     num_group = args.num_group
     num_period = args.num_period
@@ -128,7 +130,7 @@ if __name__ == '__main__':
     # Swap in the GAR model here
     model = GAR(
         warm_item, cold_item, num_user, num_item, reg_weight, dim_E,
-        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample,adv_coeff, pred_coeff
+        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample, adv_coeff, pred_coeff
     ).cuda()
     ########################################################################
     if args.inference:
