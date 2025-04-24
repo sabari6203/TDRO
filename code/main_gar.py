@@ -1,4 +1,3 @@
-# [Previous imports and init() function unchanged]
 import argparse
 import os
 import time
@@ -132,14 +131,15 @@ if __name__ == '__main__':
     num_decreases = 0 
     best_epoch = 0
     max_val_result = max_val_result_warm = max_val_result_cold = max_test_result = max_test_result_warm = max_test_result_cold = None
-    w_list = torch.ones(num_group).cuda() 
-    loss_list = torch.zeros(num_group).cuda()
+    w_list = []  # Initialize as empty list
+    loss_list = []  # Initialize as empty list
     for epoch in range(num_epoch):
         epoch_start_time = time.time()
-        loss = train_TDRO(train_dataloader, model, (g_optimizer, d_optimizer), num_group, num_period, loss_list, w_list, mu, eta, lam, p)
+        loss, loss_dict = train_TDRO(train_dataloader, model, (g_optimizer, d_optimizer), num_group, num_period, loss_list, w_list, mu, eta, lam, p)
         elapsed_time = time.time() - epoch_start_time
         print("Train: The time elapse of epoch {:03d}".format(epoch) + " is: " + 
                 time.strftime("%H: %M: %S", time.gmtime(elapsed_time)))
+        print(f"Epoch {epoch}, Loss: {loss}, G_Loss: {np.mean(loss_dict['g_loss'])}, D_Loss: {np.mean(loss_dict['d_loss'])}, Reg_Loss: {np.mean(loss_dict['reg_loss'])}, Sim_Loss: {np.mean(loss_dict['sim_loss'])}")
         if torch.isnan(loss):
             print("Loss is Nan. Quit.")
             break
