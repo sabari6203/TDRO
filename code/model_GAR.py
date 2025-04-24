@@ -45,8 +45,9 @@ class GAR(nn.Module):
             self.t_feat = None
 
         # Generator: maps multimodal features to embedding space
-        self.generator_layer1 = nn.Linear(self.dim_feat, 256)
-        self.generator_layer2 = nn.Linear(256, dim_E)
+        self.encoder_layer1 = nn.Linear(self.dim_feat, 256)
+        self.encoder_layer2 = nn.Linear(256, dim_E)
+
 
         # Optional: MLP for user/item embedding transformation (used in scoring)
         self.mlp = nn.Linear(dim_E, dim_E)
