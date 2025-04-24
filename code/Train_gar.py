@@ -57,13 +57,20 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
                 g_idx = g[i].item()
                 t_idx = t[i].item()
                 print(f"Batch {batch_idx}, idx {idx}, i {i}: g_idx={g_idx}, t_idx={t_idx}")
-                if g_idx >= n_group or t_idx >= n_period:
+                if g_idx >= n_group or t_idx >= n_period or g_idx < 0 or t_idx < 0:
                     print(f"Warning: Invalid indices g_idx={g_idx}, t_idx={t_idx}, skipping")
                     continue
-                grad_ge[g_idx][t_idx] += grad_cat_ge[i * gen_param_size:(i + 1) * gen_param_size]
-                grad_dis[g_idx][t_idx] += grad_cat_dis[i * dis_param_size:(i + 1) * dis_param_size]
-            if idx % 100 == 0:
-                print(f"Batch {batch_idx}: Processed samples {idx}/{user_tensor.size(0)}")
+                # Verify grad_ge shape before accumulation
+                print(f"Batch {batch_idx}, idx {idx}, i {i}: grad_ge[{g_idx}][{t_idx}].shape={grad_ge[g_idx][t_idx].shape}")
+                # Accumulate gradients
+                grad_slice_ge = grad_cat_ge[i * gen_param_size:(i + 1) * gen_param_size]
+                grad_slice_dis = grad_cat_dis[i * dis_param_size:(i + 1) * dis_param_size]
+                if grad_slice_ge.shape[0] != gen_param_size:
+                    print(f"Warning: grad_slice_ge.shape={grad_slice_ge.shape}, expected={gen_param_size}, skipping")
+                    continue
+                grad_ge[g_idx][t_idx] += grad_slice_ge
+                grad_dis[g_idx][t_idx] += grad_slice_dis
+            print(f"Batch {batch_idx}: Processed samples {idx}/{user_tensor.size(0)}")
         print(f"Batch {batch_idx}: Completed gradient accumulation")
         print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         for g in range(n_group):
@@ -89,7 +96,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
             for idx in range(user_tensor.size(0)):
                 g_idx = group_tensor[idx].item()
                 t_idx = period_tensor[idx].item()
-                if g_idx >= n_group or t_idx >= n_period:
+                if g_idx >= n_group or t_idx >= n_period or g_idx < 0 or t_idx < 0:
                     print(f"Warning: Invalid indices g_idx={g_idx}, t_idx={t_idx} in weighted loss, skipping")
                     continue
                 weights[idx] = w_list[g_idx][t_idx]
