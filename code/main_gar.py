@@ -35,6 +35,9 @@ def init():
     parser.add_argument('--num_sample', type=float, default=0.5, help='probability of robust training.')
     parser.add_argument('--temp_value', type=float, default=0.1, help='Contrastive temp_value.')
     parser.add_argument('--pretrained_emb', type=str, default='./pretrained_emb/', help='path of pretrained embedding of items')
+    parser.add_argument('--adv_coeff', type=float, default=1.0, help='Coefficient for adversarial loss')
+    parser.add_argument('--pred_coeff', type=float, default=1.0, help='Coefficient for interaction prediction loss')
+
 
     # Group-DRO
     parser.add_argument('--num_group', type=int, default=1, help='group number for group DRO')
