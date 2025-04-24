@@ -1,58 +1,88 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
 
-def adversarial_train(generator, discriminator, train_data, embedding_dim,
-                      epochs=10, batch_size=512, device='cpu', lr_gen=0.001, lr_dis=0.001):
-    
-    generator.to(device)
-    discriminator.to(device)
+import math
+import scipy.optimize as sopt
+import torch.nn.functional as F
+from torch.autograd import grad
 
-    gen_optimizer = optim.Adam(generator.parameters(), lr=lr_gen)
-    dis_optimizer = optim.Adam(discriminator.parameters(), lr=lr_dis)
+def train_ERM(dataloader, model, optimizer):
+    total_loss = 0.0
+    num_batches = 0
+    for user_tensor, item_tensor in dataloader:
+        optimizer.zero_grad()
+        loss, reg_loss = model.loss(user_tensor.cuda(), item_tensor.cuda())
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        num_batches += 1
+    return total_loss / num_batches
 
-    bce_loss = nn.BCELoss()
+def train_TDRO(dataloader, model, optimizer, n_group, n_period, loss_list, w_list, mu, eta, lamda, beta_p):
 
-    for epoch in range(epochs):
-        generator.train()
-        discriminator.train()
-        total_gen_loss, total_dis_loss = 0, 0
+    model.train()
 
-        dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-        for user_ids, pos_items, neg_items in dataloader:
-            user_ids = user_ids.to(device)
-            pos_items = pos_items.to(device)
-            neg_items = neg_items.to(device)
+    # period importance
+    m = nn.Softmax(dim=1) 
+    beta_e = m(torch.tensor([math.exp(beta_p * e) for e in range(n_period)]).unsqueeze(0).unsqueeze(-1).cuda())
 
-            # === Train Discriminator ===
-            user_embeds = generator.user_embedding(user_ids)
-            pos_item_embeds = generator.item_embedding(pos_items)
-            neg_item_embeds = generator.item_embedding(neg_items)
 
-            real_scores = discriminator(user_embeds, pos_item_embeds)
-            fake_scores = discriminator(user_embeds, neg_item_embeds)
+    for user_tensor, item_tensor, group_tensor, period_tensor in dataloader:
+        optimizer.zero_grad()
 
-            real_labels = torch.ones_like(real_scores)
-            fake_labels = torch.zeros_like(fake_scores)
+        sample_loss, reg_loss = model.loss(user_tensor.cuda(), item_tensor.cuda())
 
-            dis_loss = bce_loss(real_scores, real_labels) + bce_loss(fake_scores, fake_labels)
+        # calculate each group-period loss and group-period gradient
+        loss_ge = torch.zeros((n_group,n_period)).cuda()
+        grad_ge = torch.zeros((n_group,n_period,model.encoder_layer2.weight.reshape(-1).size(0))).cuda() #(linear layer input * output)
+        for name, param in model.named_parameters():
+            if name == 'encoder_layer2.weight':
+                for g_idx in range(n_group):
+                    for e_idx in range(n_period):
+                        indices = ((group_tensor.squeeze(1))==g_idx)&(period_tensor.squeeze(1)==e_idx)
+                        de = torch.sum(indices)
+                        loss_single = torch.sum(sample_loss*(indices).cuda())
+                        grad_single = grad(loss_single, param, retain_graph=True)[-1].reshape(-1) # linear layer input*output
+                        grad_single = grad_single/(grad_single.norm()+1e-16) * torch.pow(loss_single/(de+1e-16), 1) 
+                        loss_ge[g_idx,e_idx] = loss_single
+                        grad_ge[g_idx,e_idx] = grad_single
+                        
+        # worst-case factor
+        de = torch.tensor([torch.sum(group_tensor==g_idx) for g_idx in range(n_group)]).cuda()
+        loss_ = torch.sum(loss_ge,dim=1)
+        loss_ = loss_/(de+1e-16)
+        
+        # shifting factor
+        trend_ = torch.zeros(n_group).cuda()
+        for g_idx in range(n_group):
+            g_j = torch.mean(grad_ge[g_idx],dim=0) # sum up the period gradient for group 
+            sum_gie = torch.mean(grad_ge * beta_e, dim=[0,1])
+            trend_[g_idx] = g_j@sum_gie
 
-            dis_optimizer.zero_grad()
-            dis_loss.backward()
-            dis_optimizer.step()
-            total_dis_loss += dis_loss.item()
+        loss_ = loss_ * (1-lamda) + trend_ * lamda
 
-            # === Train Generator ===
-            user_embeds = generator.user_embedding(user_ids)
-            neg_item_embeds = generator.item_embedding(neg_items)
-            gen_scores = discriminator(user_embeds, neg_item_embeds)
+        # loss consistency enhancement
+        loss_[loss_==0] = loss_list[loss_==0]
+        loss_list = (1 - mu) * loss_list + mu * loss_ 
 
-            gen_loss = bce_loss(gen_scores, torch.ones_like(gen_scores))  # Fool discriminator
+        # group importance smoothing
+        update_factor = eta * loss_list
+        w_list = w_list * torch.exp(update_factor)
+        w_list = w_list/torch.sum(w_list)
+        loss_weightsum = torch.sum(w_list * loss_list)
 
-            gen_optimizer.zero_grad()
-            gen_loss.backward()
-            gen_optimizer.step()
-            total_gen_loss += gen_loss.item()
+        # add regularization loss
+        loss_weightsum = loss_weightsum + reg_loss
 
-        print(f"[Epoch {epoch+1}] Gen Loss: {total_gen_loss:.4f} | Dis Loss: {total_dis_loss:.4f}")
+        # back propagation and update parameters
+        loss_weightsum.backward()
+        optimizer.step()
+
+        loss_list.detach_()
+        w_list.detach_()
+
+    with torch.no_grad():
+        model.result[model.emb_id] = model.id_embedding[model.emb_id].data
+        model.result[model.feat_id + model.num_user] = model.feature_extractor()[model.feat_id].data
+
+    return loss_weightsum
