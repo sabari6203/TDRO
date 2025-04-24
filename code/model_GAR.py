@@ -5,7 +5,8 @@ import torch.nn.functional as F
 class GAR(nn.Module):
     def __init__(
         self, warm_item, cold_item, num_user, num_item, reg_weight, dim_E,
-        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample
+        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample,
+        adv_coeff=1.0, pred_coeff=1.0  # <-- new coefficients
     ):
         super(GAR, self).__init__()
         self.num_user = num_user
@@ -15,6 +16,8 @@ class GAR(nn.Module):
         self.reg_weight = reg_weight
         self.temp_value = temp_value
         self.num_sample = num_sample
+        self.adv_coeff = adv_coeff
+        self.pred_coeff = pred_coeff
 
         self.warm_item = list(warm_item)
         self.cold_item = list(cold_item)
