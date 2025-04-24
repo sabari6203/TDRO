@@ -6,7 +6,7 @@ def init():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1, help='Seed init.')
     parser.add_argument('--no-cuda', action='store_true', default=False, help='Disables CUDA training.')
-    parser.add_argument('--data_path', default='Amazon', help='Dataset path')
+    parser.add_argument('--data_path', default='amazon', help='Dataset path')
     parser.add_argument('--model_name', default='SSL', help='Model Name.')
     parser.add_argument('--log_name', default='', help='log name.')
 
