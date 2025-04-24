@@ -134,9 +134,10 @@ class GAR(nn.Module):
         return contrastive_loss, sample_loss
 
     def loss(self, user_tensor, item_tensor):
-        cf_loss, constraint_loss, reg_loss = self.forward(user_tensor, item_tensor)
+        adv_loss, pred_loss, reg_loss = self.forward(user_tensor, item_tensor)
         reg_loss = self.reg_weight * reg_loss
-        return cf_loss + constraint_loss, reg_loss
+        total_loss = self.adv_coeff * adv_loss + self.pred_coeff * pred_loss + reg_loss
+        return total_loss, reg_loss
 
     def eval_mode_embedding(self):
         # For evaluation: update self.result with the latest embeddings
