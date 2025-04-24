@@ -30,7 +30,8 @@ def train_TDRO(dataloader, model, optimizer, n_group, n_period, loss_list, w_lis
     for user_tensor, item_tensor, group_tensor, period_tensor in dataloader:
         optimizer.zero_grad()
 
-        sample_loss, reg_loss = model.loss(user_tensor.cuda(), item_tensor.cuda())
+        adv_loss, pred_loss, reg_loss = model.forward(user_tensor.cuda(), item_tensor.cuda())
+        sample_loss = adv_loss + pred_loss  # Or however the total contrastive loss is computed
 
         # calculate each group-period loss and group-period gradient
         loss_ge = torch.zeros((n_group,n_period)).cuda()
