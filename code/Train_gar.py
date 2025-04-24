@@ -20,7 +20,9 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
         for g in range(n_group):
             for t in range(n_period):
                 loss_list[g][t].append(g_loss.item() + d_loss.item() + reg_loss.item() + model.contrastive * sim_loss.item())
-        grad_ge = torch.zeros((n_group, n_period, model.generator.linear.weight.reshape(-1).size(0))).cuda()
+        # Calculate total number of generator parameters
+        gen_param_size = sum(param.numel() for param in model.generator.parameters() if param.requires_grad)
+        grad_ge = torch.zeros((n_group, n_period, gen_param_size)).cuda()
         grad_dis = torch.zeros((n_group, n_period, model.discriminator_user.linear1.weight.reshape(-1).size(0) + model.discriminator_item.linear1.weight.reshape(-1).size(0))).cuda()
         for idx in range(user_tensor.size(0)):
             g_optimizer.zero_grad()
