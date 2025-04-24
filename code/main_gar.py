@@ -14,7 +14,7 @@ from Metric_gar import print_results
 def init():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1, help='Seed init.')
-    parser.add_argument('--no-cuda', action='store_true', default=False, help='Disables CUDA training.')
+    parser.add_argument('--no_cuda', action='store_true', default=False, help='Disables CUDA training.')
     parser.add_argument('--data_path', default='amazon', help='Dataset path')
     parser.add_argument('--model_name', default='TDRO', help='Model Name.')
     parser.add_argument('--log_name', default='log', help='log name.')
@@ -31,7 +31,7 @@ def init():
     parser.add_argument('--num_sample', type=float, default=0.5, help='Probability of robust training.')
     parser.add_argument('--temp_value', type=float, default=0.1, help='Temperature for contrastive loss.')
     parser.add_argument('--pretrained_emb', type=str, default='./pretrained_emb/', help='path of pretrained embedding of items')
-    parser.add_argument('--num_group', type=int, default=1, help='group number for group DRO')
+    parser.add_argument('--num_group', type=int, default=5, help='group number for group DRO')
     parser.add_argument('--mu', type=float, default=0.2, help='streaming learning rate for group DRO')
     parser.add_argument('--eta', type=float, default=0.2, help='step size for group DRO')
     parser.add_argument('--num_period', type=int, default=1, help='time period number for TDRO')
