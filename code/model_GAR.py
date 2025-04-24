@@ -55,7 +55,6 @@ class GAR(nn.Module):
         self.result = nn.init.kaiming_normal_(torch.empty(num_user + num_item, dim_E)).cuda()
 
     def feature_extractor(self):
-        # Concatenate available features
         features = []
         if self.v_feat is not None:
             features.append(self.v_feat)
@@ -65,9 +64,10 @@ class GAR(nn.Module):
             features.append(self.t_feat)
         feature = torch.cat(features, dim=1) if features else None
         if feature is not None:
-            feature = F.leaky_relu(self.generator_layer1(feature))
-            feature = self.generator_layer2(feature)
+            feature = F.leaky_relu(self.encoder_layer1(feature))
+            feature = self.encoder_layer2(feature)
         return feature
+
 
     def get_item_embedding(self):
         # Warm items: use learned embeddings
