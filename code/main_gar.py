@@ -128,7 +128,7 @@ if __name__ == '__main__':
     # Swap in the GAR model here
     model = GAR(
         warm_item, cold_item, num_user, num_item, reg_weight, dim_E,
-        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample
+        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample,adv_coeff, pred_coeff
     ).cuda()
     ########################################################################
     if args.inference:
