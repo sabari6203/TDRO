@@ -108,14 +108,15 @@ class GAR(nn.Module):
         if feature_emb is not None and len(self.feat_id) > 0:
             all_item_input[rand_index] = feature_emb[rand_index % feature_emb.size(0)].clone()
 
-        # Compute scores and losses
-        contrastive_loss_1, sample_loss_1 = self.loss_contrastive(head_user, head_embed, self.temp_value)
-        contrastive_loss_2, sample_loss_2 = self.loss_contrastive(user_embedding, all_item_input, self.temp_value)
-
+        adv_loss, adv_sample_loss = self.loss_contrastive(head_user, head_embed, self.temp_value)
+        # Example: interaction prediction loss (e.g., contrastive between user and all items)
+        pred_loss, pred_sample_loss = self.loss_contrastive(user_embedding, all_item_input, self.temp_value)
+    
         reg_loss = ((torch.sqrt((user_embedding ** 2).sum(1))).mean() +
                     (torch.sqrt((all_item_embedding ** 2).sum(1))).mean()) / 2
-
-        return sample_loss_1 * self.contrastive, sample_loss_2 * (1 - self.contrastive), reg_loss
+    
+        # Return both losses separately
+        return adv_loss, pred_loss, reg_loss
 
     def loss_contrastive(self, anchor, positives, temp_value):
         # Ensure anchor is repeated to match positives if needed
