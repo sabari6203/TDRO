@@ -11,7 +11,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
     loss_dict = {'g_loss': [], 'd_loss': [], 'reg_loss': [], 'sim_loss': []}
     for _ in range(n_group):
         loss_list.append([[] for _ in range(n_period)])
-        w_list.append([1 / n_period for _ in range(n_period)])
+        w_list.append([1.0 / n_period for _ in range(n_period)])
     for batch_idx, (user_tensor, item_tensor, group_tensor, period_tensor) in enumerate(train_dataloader):
         g_optimizer.zero_grad()
         d_optimizer.zero_grad()
@@ -20,7 +20,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
         for g in range(n_group):
             for t in range(n_period):
                 loss_list[g][t].append(g_loss.item() + d_loss.item() + reg_loss.item() + model.contrastive * sim_loss.item())
-        grad_ge = torch.zeros((n_group, n_period, model.generator.linear.weight.reshape(-1).size(0))).cuda()  # Use generator’s linear layer weights
+        grad_ge = torch.zeros((n_group, n_period, model.generator.linear.weight.reshape(-1).size(0))).cuda()
         grad_dis = torch.zeros((n_group, n_period, model.discriminator_user.linear1.weight.reshape(-1).size(0) + model.discriminator_item.linear1.weight.reshape(-1).size(0))).cuda()
         for idx in range(user_tensor.size(0)):
             g_optimizer.zero_grad()
@@ -41,7 +41,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
                 if len(loss_list[g][t]) == 0:
                     continue
                 loss_g_t = np.mean(loss_list[g][t][-1:])
-                w_list[g][t] *= np.exp(eta * loss_g_t)
+                w_list[g][t] = w_list[g][t] * np.exp(eta * loss_g_t)
         for g in range(n_group):
             w_sum = sum(w_list[g])
             for t in range(n_period):
