@@ -3,20 +3,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import random
+from torch.cuda.amp import autocast, GradScaler
 
 def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list, w_list, mu, eta, lam, p):
     g_optimizer, d_optimizer = optimizer
     model.train()
     total_loss = 0
     loss_dict = {'g_loss': [], 'd_loss': [], 'reg_loss': [], 'sim_loss': []}
+    scaler = GradScaler()  # For mixed precision
     for _ in range(n_group):
         loss_list.append([[] for _ in range(n_period)])
         w_list.append([1.0 / n_period for _ in range(n_period)])
     for batch_idx, (user_tensor, item_tensor, group_tensor, period_tensor) in enumerate(train_dataloader):
+        print(f"Batch {batch_idx}: Starting")
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         g_optimizer.zero_grad()
         d_optimizer.zero_grad()
-        total_loss, (g_loss, d_loss, reg_loss, sim_loss) = model.loss(user_tensor.cuda(), item_tensor.cuda())
-        total_loss.backward()
+        with autocast():
+            total_loss, (g_loss, d_loss, reg_loss, sim_loss) = model.loss(user_tensor.cuda(), item_tensor.cuda())
+        scaler.scale(total_loss).backward()
         for g in range(n_group):
             for t in range(n_period):
                 loss_list[g][t].append(g_loss.item() + d_loss.item() + reg_loss.item() + model.contrastive * sim_loss.item())
@@ -26,16 +31,27 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
                          sum(param.numel() for param in model.discriminator_item.parameters() if param.requires_grad)
         grad_ge = torch.zeros((n_group, n_period, gen_param_size)).cuda()
         grad_dis = torch.zeros((n_group, n_period, dis_param_size)).cuda()
-        for idx in range(user_tensor.size(0)):
+        print(f"Batch {batch_idx}: gen_param_size={gen_param_size}, dis_param_size={dis_param_size}")
+        batch_size_inner = 64  # Process 64 samples at a time
+        for idx in range(0, user_tensor.size(0), batch_size_inner):
+            end_idx = min(idx + batch_size_inner, user_tensor.size(0))
             g_optimizer.zero_grad()
             d_optimizer.zero_grad()
-            loss = model.loss(user_tensor[idx:idx+1].cuda(), item_tensor[idx:idx+1].cuda())[0]
-            loss.backward()
-            g = group_tensor[idx].item()
-            t = period_tensor[idx].item()
-            grad_ge[g][t] += torch.cat([param.grad.reshape(-1) for param in model.generator.parameters() if param.grad is not None])
-            grad_dis[g][t] += torch.cat([param.grad.reshape(-1) for param in model.discriminator_user.parameters() if param.grad is not None] +
-                                        [param.grad.reshape(-1) for param in model.discriminator_item.parameters() if param.grad is not None])
+            with autocast():
+                loss = model.loss(user_tensor[idx:end_idx].cuda(), item_tensor[idx:end_idx].cuda())[0]
+            scaler.scale(loss).backward()
+            g = group_tensor[idx:end_idx].cuda()
+            t = period_tensor[idx:end_idx].cuda()
+            grad_cat_ge = torch.cat([param.grad.reshape(-1) for param in model.generator.parameters() if param.grad is not None])
+            grad_cat_dis = torch.cat([param.grad.reshape(-1) for param in model.discriminator_user.parameters() if param.grad is not None] +
+                                     [param.grad.reshape(-1) for param in model.discriminator_item.parameters() if param.grad is not None])
+            for i in range(end_idx - idx):
+                grad_ge[g[i].item()][t[i].item()] += grad_cat_ge[i * gen_param_size:(i + 1) * gen_param_size]
+                grad_dis[g[i].item()][t[i].item()] += grad_cat_dis[i * dis_param_size:(i + 1) * dis_param_size]
+            if idx % 100 == 0:
+                print(f"Batch {batch_idx}: Processed samples {idx}/{user_tensor.size(0)}")
+        print(f"Batch {batch_idx}: Completed gradient accumulation")
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         for g in range(n_group):
             for t in range(n_period):
                 grad_ge[g][t] /= user_tensor.size(0)
@@ -52,19 +68,30 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
                 w_list[g][t] /= w_sum
         g_optimizer.zero_grad()
         d_optimizer.zero_grad()
-        weighted_loss = 0
-        for idx in range(user_tensor.size(0)):
-            g = group_tensor[idx].item()
-            t = period_tensor[idx].item()
-            loss = model.loss(user_tensor[idx:idx+1].cuda(), item_tensor[idx:idx+1].cuda())[0]
-            weighted_loss += w_list[g][t] * loss
-        weighted_loss /= user_tensor.size(0)
-        weighted_loss.backward()
-        g_optimizer.step()
-        d_optimizer.step()
+        print(f"Batch {batch_idx}: Starting weighted loss computation")
+        with autocast():
+            losses = model.loss(user_tensor.cuda(), item_tensor.cuda())[0]  # Compute loss for entire batch
+            weights = torch.zeros(user_tensor.size(0)).cuda()
+            for idx in range(user_tensor.size(0)):
+                g = group_tensor[idx].item()
+                t = period_tensor[idx].item()
+                weights[idx] = w_list[g][t]
+            weighted_loss = (losses * weights).mean()
+        print(f"Batch {batch_idx}: Weighted loss: {weighted_loss.item()}")
+        scaler.scale(weighted_loss).backward()
+        scaler.unscale_(g_optimizer)
+        scaler.unscale_(d_optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(g_optimizer)
+        scaler.step(d_optimizer)
+        scaler.update()
         total_loss += weighted_loss.item()
         loss_dict['g_loss'].append(g_loss.item())
         loss_dict['d_loss'].append(d_loss.item())
         loss_dict['reg_loss'].append(reg_loss.item())
         loss_dict['sim_loss'].append(sim_loss.item())
+        torch.cuda.empty_cache()
+        print(f"Batch {batch_idx}: Completed, total_loss: {total_loss}")
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+    print(f"Epoch completed, average loss: {total_loss / len(train_dataloader)}")
     return total_loss / len(train_dataloader), loss_dict
