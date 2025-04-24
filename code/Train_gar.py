@@ -10,7 +10,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
     model.train()
     total_loss = 0
     loss_dict = {'g_loss': [], 'd_loss': [], 'reg_loss': [], 'sim_loss': []}
-    scaler = GradScaler('cuda')  # Updated API for mixed precision
+    scaler = GradScaler('cuda')
     for _ in range(n_group):
         loss_list.append([[] for _ in range(n_period)])
         w_list.append([1.0 / n_period for _ in range(n_period)])
@@ -19,7 +19,7 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
         print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         g_optimizer.zero_grad()
         d_optimizer.zero_grad()
-        with autocast('cuda'):  # Updated API
+        with autocast('cuda'):
             total_loss, (g_loss, d_loss, reg_loss, sim_loss) = model.loss(user_tensor.cuda(), item_tensor.cuda())
         scaler.scale(total_loss).backward()
         for g in range(n_group):
@@ -32,12 +32,12 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
         grad_ge = torch.zeros((n_group, n_period, gen_param_size)).cuda()
         grad_dis = torch.zeros((n_group, n_period, dis_param_size)).cuda()
         print(f"Batch {batch_idx}: gen_param_size={gen_param_size}, dis_param_size={dis_param_size}")
-        batch_size_inner = 64  # Process 64 samples at a time
+        batch_size_inner = 64
         for idx in range(0, user_tensor.size(0), batch_size_inner):
             end_idx = min(idx + batch_size_inner, user_tensor.size(0))
             g_optimizer.zero_grad()
             d_optimizer.zero_grad()
-            with autocast('cuda'):  # Updated API
+            with autocast('cuda'):
                 loss = model.loss(user_tensor[idx:end_idx].cuda(), item_tensor[idx:end_idx].cuda())[0]
             scaler.scale(loss).backward()
             # Debug gradients
@@ -54,8 +54,14 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
             g = group_tensor[idx:end_idx].cuda()
             t = period_tensor[idx:end_idx].cuda()
             for i in range(end_idx - idx):
-                grad_ge[g[i].item()][t[i].item()] += grad_cat_ge[i * gen_param_size:(i + 1) * gen_param_size]
-                grad_dis[g[i].item()][t[i].item()] += grad_cat_dis[i * dis_param_size:(i + 1) * dis_param_size]
+                g_idx = g[i].item()
+                t_idx = t[i].item()
+                print(f"Batch {batch_idx}, idx {idx}, i {i}: g_idx={g_idx}, t_idx={t_idx}")
+                if g_idx >= n_group or t_idx >= n_period:
+                    print(f"Warning: Invalid indices g_idx={g_idx}, t_idx={t_idx}, skipping")
+                    continue
+                grad_ge[g_idx][t_idx] += grad_cat_ge[i * gen_param_size:(i + 1) * gen_param_size]
+                grad_dis[g_idx][t_idx] += grad_cat_dis[i * dis_param_size:(i + 1) * dis_param_size]
             if idx % 100 == 0:
                 print(f"Batch {batch_idx}: Processed samples {idx}/{user_tensor.size(0)}")
         print(f"Batch {batch_idx}: Completed gradient accumulation")
@@ -77,13 +83,16 @@ def train_TDRO(train_dataloader, model, optimizer, n_group, n_period, loss_list,
         g_optimizer.zero_grad()
         d_optimizer.zero_grad()
         print(f"Batch {batch_idx}: Starting weighted loss computation")
-        with autocast('cuda'):  # Updated API
-            losses = model.loss(user_tensor.cuda(), item_tensor.cuda())[0]  # Compute loss for entire batch
+        with autocast('cuda'):
+            losses = model.loss(user_tensor.cuda(), item_tensor.cuda())[0]
             weights = torch.zeros(user_tensor.size(0)).cuda()
             for idx in range(user_tensor.size(0)):
-                g = group_tensor[idx].item()
-                t = period_tensor[idx].item()
-                weights[idx] = w_list[g][t]
+                g_idx = group_tensor[idx].item()
+                t_idx = period_tensor[idx].item()
+                if g_idx >= n_group or t_idx >= n_period:
+                    print(f"Warning: Invalid indices g_idx={g_idx}, t_idx={t_idx} in weighted loss, skipping")
+                    continue
+                weights[idx] = w_list[g_idx][t_idx]
             weighted_loss = (losses * weights).mean()
         print(f"Batch {batch_idx}: Weighted loss: {weighted_loss.item()}")
         scaler.scale(weighted_loss).backward()
