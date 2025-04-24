@@ -114,7 +114,14 @@ class GAR(nn.Module):
         return sample_loss_1 * self.contrastive, sample_loss_2 * (1 - self.contrastive), reg_loss
 
     def loss_contrastive(self, anchor, positives, temp_value):
-        all_score = torch.exp(torch.sum(anchor * positives, dim=1) / (temp_value)).view(-1, 1 + self.num_neg)
+        # Ensure anchor is repeated to match positives if needed
+        if anchor.size(0) != positives.size(0):
+            # If anchor is [batch_size, dim] and positives is [batch_size * (1+num_neg), dim]
+            anchor = anchor.repeat_interleave(1 + self.num_neg, dim=0)
+        
+        # Now both tensors should have the same first dimension
+        similarity = torch.sum(anchor * positives, dim=1) / temp_value
+        all_score = torch.exp(similarity).view(-1, 1 + self.num_neg)
         pos_score = all_score[:, 0]
         all_score = torch.sum(all_score, dim=1)
         sample_loss = -torch.log(pos_score / all_score)
