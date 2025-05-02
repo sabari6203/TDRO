@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class GAR(nn.Module):
     def __init__(
         self, warm_item, cold_item, num_user, num_item, reg_weight, dim_E,
-        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample,
+        v_feat, a_feat, t_feat, temp_value, num_neg, contrastive, num_sample,similarity_weight=1.0,
         adv_coeff=1.0, pred_coeff=1.0  # <-- new coefficients
     ):
         super(GAR, self).__init__()
@@ -16,6 +16,7 @@ class GAR(nn.Module):
         self.reg_weight = reg_weight
         self.temp_value = temp_value
         self.num_sample = num_sample
+        self.similarity_weight = similarity_weight
         self.adv_coeff = adv_coeff
         self.pred_coeff = pred_coeff
 
@@ -114,9 +115,14 @@ class GAR(nn.Module):
     
         reg_loss = ((torch.sqrt((user_embedding ** 2).sum(1))).mean() +
                     (torch.sqrt((all_item_embedding ** 2).sum(1))).mean()) / 2
+        similarity_loss = 0.0
+        if self.similarity_weight > 0 and self.cold_item:
+            true_embed = self.id_embedding[torch.tensor(self.cold_item).to(self.id_embedding.device)]
+            gen_embed = self.feature_extractor()[torch.tensor(self.feat_id).to(self.id_embedding.device)]
+            similarity_loss = F.mse_loss(true_embed, gen_embed)
     
         # Return both losses separately
-        return adv_loss, pred_loss, reg_loss
+        return adv_loss, pred_loss, reg_loss, similarity_loss
 
     def loss_contrastive(self, anchor, positives, temp_value):
         # Ensure anchor is repeated to match positives if needed
@@ -134,10 +140,12 @@ class GAR(nn.Module):
         return contrastive_loss, sample_loss
 
     def loss(self, user_tensor, item_tensor):
-        adv_loss, pred_loss, reg_loss = self.forward(user_tensor, item_tensor)
+        adv_loss, pred_loss, reg_loss, sim_loss = self.forward(user_tensor, item_tensor)
         reg_loss = self.reg_weight * reg_loss
-        total_loss = self.adv_coeff * adv_loss + self.pred_coeff * pred_loss + reg_loss
+        sim_loss = self.similarity_weight * sim_loss
+        total_loss = self.adv_coeff * adv_loss + self.pred_coeff * pred_loss + sim_loss + reg_loss
         return total_loss, reg_loss
+
 
     def eval_mode_embedding(self):
         # For evaluation: update self.result with the latest embeddings
