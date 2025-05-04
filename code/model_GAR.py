@@ -22,10 +22,10 @@ class GAR(nn.Module):
 
         self.warm_item = list(warm_item)
         self.cold_item = list(cold_item)
-        self.emb_id = list(range(num_user)) + self.warm_item
-        self.feat_id = torch.tensor([i_id - num_user for i_id in self.cold_item])
+        self.emb_id = list(range(num_user)) + self.warm_item #list of all users and warm items
+        self.feat_id = torch.tensor([i_id - num_user for i_id in self.cold_item])#Selecting the correct rows from the multimodal feature matrix to generate embeddings for cold items
 
-        # ID-based embeddings for users and warm items
+        # ID-based embeddings for users and warm items = embedding matrix
         self.id_embedding = nn.Parameter(
             nn.init.xavier_normal_(torch.empty(num_user + num_item, dim_E))
         )
@@ -49,6 +49,9 @@ class GAR(nn.Module):
             self.t_feat = None
 
         # Generator: maps multimodal features to embedding space
+        # two-layer feedforward neural network (MLP) that acts as a generator 
+        # to convert multimodal features (from cold items) into the same embedding space as ID-based embeddings (used for warm items).
+
         self.encoder_layer1 = nn.Linear(self.dim_feat, 256)
         self.encoder_layer2 = nn.Linear(256, dim_E)
 
@@ -59,7 +62,7 @@ class GAR(nn.Module):
         # Store the final embeddings for evaluation
         self.result = nn.init.kaiming_normal_(torch.empty(num_user + num_item, dim_E)).cuda()
 
-    def feature_extractor(self):
+    def feature_extractor(self): #responsible for extracting and processing multimodal features (visual, audio, and textual) to generate a feature embedding that will be used in further computations
         features = []
         if self.v_feat is not None:
             features.append(self.v_feat)
@@ -77,10 +80,11 @@ class GAR(nn.Module):
     def get_item_embedding(self):
         # Warm items: use learned embeddings
         # Cold items: use generator output from features
-        feature_emb = self.feature_extractor()
-        result = self.id_embedding.clone()
+        feature_emb = self.feature_extractor() # to obtain the feature-based embeddings for cold items
+        result = self.id_embedding.clone() #contains the learned embeddings for warm items (those present in the training set) and users
         if feature_emb is not None and len(self.feat_id) > 0:
             result[self.feat_id + self.num_user] = feature_emb[self.feat_id].data
+            # replacing the initial values for those cold items with the generated feature-based embeddings
         return result
 
     def forward(self, user_tensor, item_tensor):
